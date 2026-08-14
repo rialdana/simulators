@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+#
+# sim — one command for iOS simulators and Android emulators.
+#
+#   sim                    interactive menu
+#   sim ls                 list devices and their state
+#   sim boot [name]        boot a device (Android resumes its quick-boot snapshot)
+#   sim cold [name]        cold boot: full shutdown, then a fresh start
+#   sim kill [name|all]    shut down a device, or everything
+#   sim erase [name]       factory reset a device (asks for confirmation)
+#   sim fav [name]         toggle a favorite (marked ★, listed first)
+#   sim <name>             shorthand for `sim boot <name>`
+#
+# Names match loosely (case-insensitive, spaces/underscores/dashes ignored):
+#   sim cold pixel9a
+#   sim boot 16e
+
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+EMULATOR="$ANDROID_SDK/emulator/emulator"
+ADB="$ANDROID_SDK/platform-tools/adb"
+[ -x "$ADB" ] || ADB="$(command -v adb 2>/dev/null)"
+
+# Favorites are shared with Simulators.app: one device id per line.
+FAV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/sim/favorites"
+
+is_fav() { [ -f "$FAV_FILE" ] && grep -qxF "$1" "$FAV_FILE"; }
+
+if [ -t 1 ]; then
+  GREEN=$'\033[32m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+else
+  GREEN=""; DIM=""; BOLD=""; RESET=""
+fi
+
+die() { echo "sim: $*" >&2; exit 1; }
+
+usage() {
+  awk 'NR > 2 && !/^#/ { exit } NR > 2 { sub(/^# ?/, ""); print }' "$0"
+}
+
+# ---------------------------------------------------------------- inventory --
+# Parallel arrays, one entry per device.
+D_PLATFORM=(); D_NAME=(); D_ID=(); D_STATE=(); D_OS=(); D_SERIAL=()
+
+load_ios() {
+  command -v xcrun >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || { echo "sim: jq not found, skipping iOS simulators" >&2; return 0; }
+  local rt name udid state os ver
+  while IFS=$'\t' read -r rt name udid state; do
+    rt="${rt##*.SimRuntime.}"          # iOS-26-2
+    os="${rt%%-*}"; ver="${rt#*-}"; ver="${ver//-/.}"
+    D_PLATFORM[${#D_PLATFORM[@]}]="ios"
+    D_NAME[${#D_NAME[@]}]="$name"
+    D_ID[${#D_ID[@]}]="$udid"
+    D_STATE[${#D_STATE[@]}]="$state"
+    D_OS[${#D_OS[@]}]="$os $ver"
+    D_SERIAL[${#D_SERIAL[@]}]=""
+  done < <(xcrun simctl list devices available --json 2>/dev/null \
+    | jq -r '.devices | to_entries | sort_by(.key)[] | select(.key | test("iOS")) | .key as $rt
+             | .value[] | [$rt, .name, .udid, .state] | @tsv')
+}
+
+load_android() {
+  [ -x "$EMULATOR" ] || return 0
+  local serials="" s n avd state serial i
+  local run_serials=() run_names=()
+  if [ -n "$ADB" ]; then
+    serials="$("$ADB" devices 2>/dev/null | awk '/^emulator-/{print $1}')"
+  fi
+  for s in $serials; do
+    n="$("$ADB" -s "$s" emu avd name 2>/dev/null | head -1 | tr -d '\r')"
+    if [ -n "$n" ]; then
+      run_serials[${#run_serials[@]}]="$s"
+      run_names[${#run_names[@]}]="$n"
+    fi
+  done
+  while IFS= read -r avd; do
+    [ -n "$avd" ] || continue
+    state="Shutdown"; serial=""; i=0
+    for n in "${run_names[@]}"; do
+      [ "$n" = "$avd" ] && { state="Booted"; serial="${run_serials[$i]}"; }
+      i=$((i+1))
+    done
+    D_PLATFORM[${#D_PLATFORM[@]}]="android"
+    D_NAME[${#D_NAME[@]}]="$avd"
+    D_ID[${#D_ID[@]}]="$avd"
+    D_STATE[${#D_STATE[@]}]="$state"
+    D_OS[${#D_OS[@]}]="Android"
+    D_SERIAL[${#D_SERIAL[@]}]="$serial"
+  done < <("$EMULATOR" -list-avds 2>/dev/null | grep -E '^[A-Za-z0-9._-]+$')
+}
+
+load_all() {
+  load_ios
+  load_android
+  [ ${#D_NAME[@]} -gt 0 ] || die "no iOS simulators or Android AVDs found"
+  reorder_favorites
+}
+
+# Float favorites to the top of their platform group, preserving order otherwise.
+reorder_favorites() {
+  [ -s "$FAV_FILE" ] || return 0
+  local order=() plat i
+  for plat in ios android; do
+    for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+      [ "${D_PLATFORM[$i]}" = "$plat" ] && is_fav "${D_ID[$i]}" && order[${#order[@]}]="$i"
+    done
+    for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+      [ "${D_PLATFORM[$i]}" = "$plat" ] && ! is_fav "${D_ID[$i]}" && order[${#order[@]}]="$i"
+    done
+  done
+  local np=() nn=() nid=() nst=() nos=() nse=()
+  for i in "${order[@]}"; do
+    np[${#np[@]}]="${D_PLATFORM[$i]}"
+    nn[${#nn[@]}]="${D_NAME[$i]}"
+    nid[${#nid[@]}]="${D_ID[$i]}"
+    nst[${#nst[@]}]="${D_STATE[$i]}"
+    nos[${#nos[@]}]="${D_OS[$i]}"
+    nse[${#nse[@]}]="${D_SERIAL[$i]}"
+  done
+  D_PLATFORM=("${np[@]}"); D_NAME=("${nn[@]}"); D_ID=("${nid[@]}")
+  D_STATE=("${nst[@]}"); D_OS=("${nos[@]}"); D_SERIAL=("${nse[@]}")
+}
+
+# ------------------------------------------------------------------ display --
+device_line() { # index
+  local i=$1 dot="${DIM}○ off${RESET}" star="  "
+  [ "${D_STATE[$i]}" = "Booted" ] && dot="${GREEN}● booted${RESET}"
+  is_fav "${D_ID[$i]}" && star="★ "
+  printf "%s%-28s %-11s %s" "$star" "${D_NAME[$i]}" "${D_OS[$i]}" "$dot"
+}
+
+print_devices() {
+  local i last=""
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    if [ "${D_PLATFORM[$i]}" != "$last" ]; then
+      last="${D_PLATFORM[$i]}"
+      [ "$last" = "ios" ] && echo "${BOLD}iOS simulators${RESET}" || echo "${BOLD}Android emulators${RESET}"
+    fi
+    printf "  %2d) %s\n" "$((i + 1))" "$(device_line "$i")"
+  done
+}
+
+# ---------------------------------------------------------------- selection --
+norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' _-'; }
+
+find_matches() { # query -> MATCHES=(indices)
+  local q i; q="$(norm "$1")"; MATCHES=()
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    case "$(norm "${D_NAME[$i]}")" in
+      *"$q"*) MATCHES[${#MATCHES[@]}]="$i" ;;
+    esac
+  done
+}
+
+read_number() { # max -> echoes choice-1, or "q" if the user quit
+  local c
+  printf "Device number (q to quit): " >&2
+  read -r c
+  case "$c" in q | Q | "") echo q; return 0 ;; esac
+  printf '%s' "$c" | grep -qE '^[0-9]+$' || die "not a number: $c"
+  { [ "$c" -ge 1 ] && [ "$c" -le "$1" ]; } || die "out of range: $c"
+  echo $((c - 1))
+}
+
+choose_from() { # indices... -> sets SEL
+  local n=1 i pick
+  for i in "$@"; do
+    printf "  %2d) %s\n" "$n" "$(device_line "$i")"
+    n=$((n + 1))
+  done
+  pick="$(read_number $#)" || exit 1
+  [ "$pick" = "q" ] && exit 0
+  shift "$pick"
+  SEL="$1"
+}
+
+resolve() { # [query...] -> sets SEL
+  if [ $# -gt 0 ] && [ -n "$*" ]; then
+    find_matches "$*"
+    case ${#MATCHES[@]} in
+      0) die "no device matching '$*' (see 'sim ls')" ;;
+      1) SEL="${MATCHES[0]}" ;;
+      *)
+        echo "Multiple devices match '$*':"
+        choose_from "${MATCHES[@]}"
+        ;;
+    esac
+  else
+    print_devices
+    echo
+    SEL="$(read_number ${#D_NAME[@]})" || exit 1
+    [ "$SEL" = "q" ] && exit 0
+  fi
+}
+
+# ------------------------------------------------------------------ actions --
+launch_avd() { # avd [extra emulator flags...]
+  local avd="$1"; shift
+  nohup "$EMULATOR" -avd "$avd" "$@" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+wait_gone() { # serial — wait for an emulator to disappear from adb
+  local s="$1" t=0
+  while "$ADB" devices 2>/dev/null | grep -q "^$s[[:space:]]"; do
+    sleep 1
+    t=$((t + 1))
+    [ $t -ge 20 ] && { echo "  (still shutting down, continuing anyway...)"; break; }
+  done
+}
+
+do_boot() { # index
+  local i=$1
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    if [ "${D_STATE[$i]}" = "Booted" ]; then
+      echo "${D_NAME[$i]} is already booted — bringing Simulator to the front."
+    else
+      echo "Booting ${D_NAME[$i]} (${D_OS[$i]})..."
+      xcrun simctl boot "${D_ID[$i]}"
+    fi
+    open -a Simulator
+  else
+    if [ "${D_STATE[$i]}" = "Booted" ]; then
+      echo "${D_NAME[$i]} is already running."
+    else
+      echo "Booting ${D_NAME[$i]} (resumes snapshot; use 'sim cold' for a fresh boot)..."
+      launch_avd "${D_ID[$i]}"
+    fi
+  fi
+}
+
+do_cold() { # index
+  local i=$1
+  echo "Cold-booting ${D_NAME[$i]}..."
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl shutdown "${D_ID[$i]}" >/dev/null 2>&1
+    xcrun simctl boot "${D_ID[$i]}"
+    open -a Simulator
+  else
+    if [ -n "${D_SERIAL[$i]}" ]; then
+      "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
+      wait_gone "${D_SERIAL[$i]}"
+    fi
+    launch_avd "${D_ID[$i]}" -no-snapshot-load
+  fi
+}
+
+do_kill() { # index
+  local i=$1
+  if [ "${D_STATE[$i]}" != "Booted" ]; then
+    echo "${D_NAME[$i]} is not running."
+    return 0
+  fi
+  echo "Shutting down ${D_NAME[$i]}..."
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl shutdown "${D_ID[$i]}" >/dev/null 2>&1
+  else
+    "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
+    wait_gone "${D_SERIAL[$i]}"
+  fi
+}
+
+kill_all() {
+  echo "Shutting down all iOS simulators..."
+  xcrun simctl shutdown all >/dev/null 2>&1
+  if [ -n "$ADB" ]; then
+    local s
+    for s in $("$ADB" devices 2>/dev/null | awk '/^emulator-/{print $1}'); do
+      echo "Shutting down $s..."
+      "$ADB" -s "$s" emu kill >/dev/null 2>&1
+    done
+  fi
+}
+
+do_erase() { # index
+  local i=$1 ans
+  printf "Factory-reset %s? This deletes all of its data. [y/N] " "${D_NAME[$i]}"
+  read -r ans
+  case "$ans" in y | Y | yes) ;; *) echo "Cancelled."; return 0 ;; esac
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl shutdown "${D_ID[$i]}" >/dev/null 2>&1
+    xcrun simctl erase "${D_ID[$i]}"
+    echo "Erased. Use 'sim boot ${D_NAME[$i]}' to start it fresh."
+  else
+    if [ -n "${D_SERIAL[$i]}" ]; then
+      "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
+      wait_gone "${D_SERIAL[$i]}"
+    fi
+    echo "Wiping ${D_NAME[$i]} and booting it fresh..."
+    launch_avd "${D_ID[$i]}" -wipe-data -no-snapshot-load
+  fi
+}
+
+toggle_fav() { # index
+  local id="${D_ID[$1]}" name="${D_NAME[$1]}"
+  mkdir -p "$(dirname "$FAV_FILE")"
+  touch "$FAV_FILE"
+  if grep -qxF "$id" "$FAV_FILE"; then
+    grep -vxF "$id" "$FAV_FILE" > "$FAV_FILE.tmp" && mv "$FAV_FILE.tmp" "$FAV_FILE"
+    echo "Removed $name from favorites."
+  else
+    printf '%s\n' "$id" >> "$FAV_FILE"
+    echo "Added ★ $name to favorites."
+  fi
+}
+
+# -------------------------------------------------------------- interactive --
+interactive() {
+  print_devices
+  echo
+  SEL="$(read_number ${#D_NAME[@]})" || exit 1
+  [ "$SEL" = "q" ] && exit 0
+  local a
+  printf "Action: (b)oot  (c)old boot  (k)ill  (e)rase  (f)avorite  [b]: "
+  read -r a
+  case "$a" in
+    "" | b | boot) do_boot "$SEL" ;;
+    c | cold) do_cold "$SEL" ;;
+    k | kill | s) do_kill "$SEL" ;;
+    e | erase) do_erase "$SEL" ;;
+    f | fav) toggle_fav "$SEL" ;;
+    q | Q) exit 0 ;;
+    *) die "unknown action '$a'" ;;
+  esac
+}
+
+# ----------------------------------------------------------------- dispatch --
+main() {
+  local cmd="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$cmd" in
+    "" | menu)
+      load_all; interactive ;;
+    ls | list | status)
+      load_all; print_devices ;;
+    boot | start | launch)
+      load_all; resolve "$@"; do_boot "$SEL" ;;
+    cold | restart | reboot)
+      load_all; resolve "$@"; do_cold "$SEL" ;;
+    kill | shutdown | stop | down)
+      load_all
+      if [ "${1:-}" = "all" ]; then kill_all; else resolve "$@"; do_kill "$SEL"; fi ;;
+    erase | wipe | reset)
+      load_all; resolve "$@"; do_erase "$SEL" ;;
+    fav | favorite | star | unfav)
+      load_all; resolve "$@"; toggle_fav "$SEL" ;;
+    -h | --help | help)
+      usage ;;
+    *)
+      # Anything else is treated as a device name: `sim pixel9a` boots it.
+      load_all
+      find_matches "$cmd $*"
+      [ ${#MATCHES[@]} -gt 0 ] || die "unknown command or device '$cmd' (try 'sim help')"
+      resolve "$cmd" "$@"
+      do_boot "$SEL" ;;
+  esac
+}
+
+main "$@"
