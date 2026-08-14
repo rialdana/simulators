@@ -4,8 +4,25 @@ struct MainWindow: View {
     @EnvironmentObject private var store: DeviceStore
     @State private var search = ""
     @State private var filter: PlatformFilter = .all
-    @State private var eraseTarget: Device?
-    @State private var showEraseConfirm = false
+    @State private var pending: PendingAction?
+    @State private var showConfirm = false
+
+    enum PendingAction {
+        case erase(Device)
+        case delete(Device)
+
+        var device: Device {
+            switch self {
+            case .erase(let d), .delete(let d): return d
+            }
+        }
+        var title: String {
+            switch self {
+            case .erase(let d): return "Erase \(d.name)?"
+            case .delete(let d): return "Delete \(d.name)?"
+            }
+        }
+    }
 
     enum PlatformFilter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -24,14 +41,27 @@ struct MainWindow: View {
         .safeAreaInset(edge: .bottom) { statusBar }
         .onAppear { WindowActivation.windowOpened() }
         .onDisappear { WindowActivation.windowClosed() }
+        .sheet(isPresented: $store.showCreateSheet) {
+            CreateDeviceSheet().environmentObject(store)
+        }
         .confirmationDialog(
-            "Erase \(eraseTarget?.name ?? "device")?",
-            isPresented: $showEraseConfirm,
-            presenting: eraseTarget
-        ) { device in
-            Button("Erase All Content & Settings", role: .destructive) { store.erase(device) }
-        } message: { device in
-            Text("This deletes all apps and data on \(device.name). You can't undo this.")
+            pending?.title ?? "",
+            isPresented: $showConfirm,
+            presenting: pending
+        ) { action in
+            switch action {
+            case .erase(let device):
+                Button("Erase All Content & Settings", role: .destructive) { store.erase(device) }
+            case .delete(let device):
+                Button("Delete Permanently", role: .destructive) { store.deleteDevice(device) }
+            }
+        } message: { action in
+            switch action {
+            case .erase(let device):
+                Text("This deletes all apps and data on \(device.name). You can't undo this.")
+            case .delete(let device):
+                Text("This removes \(device.name) from this Mac entirely, including all of its data. You can't undo this.")
+            }
         }
         .alert("Something went wrong", isPresented: errorBinding) {
             Button("OK", role: .cancel) {}
@@ -56,10 +86,11 @@ struct MainWindow: View {
                 ForEach(sections, id: \.title) { section in
                     Section(section.title) {
                         ForEach(section.devices) { device in
-                            DeviceRow(device: device) {
-                                eraseTarget = device
-                                showEraseConfirm = true
-                            }
+                            DeviceRow(
+                                device: device,
+                                onErase: { pending = .erase(device); showConfirm = true },
+                                onDelete: { pending = .delete(device); showConfirm = true }
+                            )
                         }
                     }
                 }
@@ -77,6 +108,14 @@ struct MainWindow: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+        }
+        ToolbarItem {
+            Button {
+                store.showCreateSheet = true
+            } label: {
+                Label("New Device", systemImage: "plus")
+            }
+            .help("Create a new simulator or emulator")
         }
         ToolbarItem {
             Button {
@@ -154,6 +193,7 @@ struct DeviceRow: View {
     @EnvironmentObject private var store: DeviceStore
     let device: Device
     let onErase: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -201,6 +241,14 @@ struct DeviceRow: View {
 
             if device.booted {
                 Button {
+                    store.screenshot(device)
+                } label: {
+                    Label("Screenshot", systemImage: "camera")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Screenshot to the Desktop and reveal it in Finder")
+
+                Button {
                     store.coldBoot(device)
                 } label: {
                     Label("Cold Boot", systemImage: "arrow.counterclockwise")
@@ -229,6 +277,7 @@ struct DeviceRow: View {
                 }
                 Divider()
                 Button("Erase All Content & Settings…", role: .destructive) { onErase() }
+                Button("Delete Device…", role: .destructive) { onDelete() }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }

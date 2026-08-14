@@ -75,6 +75,13 @@ refreshes every 5 seconds, so devices booted from Xcode, Android Studio, or
 the CLI show up too. There's a "Start at Login" toggle and a
 "Check for Updates…" item in the menu.
 
+The full device lifecycle lives here too: booted devices have a
+**Screenshot** action (saves to the Desktop and reveals the file in
+Finder), every device has **Delete Device…** behind a confirmation, and
+**New Device…** (menu bar item or the + toolbar button) opens a sheet with
+platform/model/OS pickers — the same creation flow as `sim create`,
+including automatic system-image downloads.
+
 ## Favorites
 
 Star the devices you actually use. Favorites float to the top everywhere: a

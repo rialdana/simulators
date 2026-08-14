@@ -49,6 +49,10 @@ struct MenuContent: View {
         }
 
         Section {
+            Button("New Device…") {
+                store.showCreateSheet = true
+                openMainWindow()
+            }
             Button("Open Simulators…") { openMainWindow() }
         }
 
@@ -79,6 +83,7 @@ struct DeviceActionsMenu: View {
                 if device.platform == .ios {
                     Button("Show in Simulator") { store.boot(device) }
                 }
+                Button("Screenshot") { store.screenshot(device) }
                 Button("Cold Boot (Restart)") { store.coldBoot(device) }
                 Button("Shut Down") { store.shutdown(device) }
             } else {
@@ -91,6 +96,9 @@ struct DeviceActionsMenu: View {
             }
             Menu("Erase…") {
                 Button("Erase All Content & Settings", role: .destructive) { store.erase(device) }
+            }
+            Menu("Delete…") {
+                Button("Delete Device Permanently", role: .destructive) { store.deleteDevice(device) }
             }
         } label: {
             Text(label)

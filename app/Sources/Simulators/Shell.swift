@@ -20,13 +20,20 @@ enum Shell {
     /// arrive. A hard timeout terminates anything that stalls (e.g. a hung
     /// network fetch) so callers always get an answer.
     @discardableResult
-    static func run(_ path: String, _ args: [String], timeout: TimeInterval = 120) async throws -> String {
+    static func run(_ path: String, _ args: [String], timeout: TimeInterval = 120, input: String? = nil) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)
                 process.arguments = args
-                process.standardInput = FileHandle.nullDevice
+                if let input, let data = input.data(using: .utf8) {
+                    let stdin = Pipe()
+                    process.standardInput = stdin
+                    stdin.fileHandleForWriting.write(data)
+                    stdin.fileHandleForWriting.closeFile()
+                } else {
+                    process.standardInput = FileHandle.nullDevice
+                }
 
                 let out = Pipe()
                 let err = Pipe()
@@ -101,5 +108,22 @@ enum Shell {
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = ["-c", "nohup \(command) >/dev/null 2>&1 &"]
         try? process.run()
+    }
+}
+
+/// The device-lifecycle features (create, delete, screenshot, models) shell
+/// out to the `sim` CLI so there's one implementation of the tricky parts
+/// (cmdline-tools bootstrap, system image downloads, avdmanager quirks).
+enum SimCLI {
+    struct NotInstalled: LocalizedError {
+        var errorDescription: String? {
+            "The sim CLI isn't on PATH — run install.sh from the simulators repo."
+        }
+    }
+
+    @discardableResult
+    static func run(_ args: [String], input: String? = nil, timeout: TimeInterval = 300) async throws -> String {
+        guard let sim = Updater.simPath else { throw NotInstalled() }
+        return try await Shell.run(sim, args, timeout: timeout, input: input)
     }
 }

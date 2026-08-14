@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 @MainActor
 final class DeviceStore: ObservableObject {
@@ -7,6 +8,7 @@ final class DeviceStore: ObservableObject {
     @Published var busy: Set<String> = []
     @Published var favorites: Set<String> = Favorites.load()
     @Published var lastError: String?
+    @Published var showCreateSheet = false
 
     private var timer: Timer?
 
@@ -57,6 +59,22 @@ final class DeviceStore: ObservableObject {
     func coldBoot(_ d: Device) { perform(d) { try await Actions.coldBoot(d) } }
     func shutdown(_ d: Device) { perform(d) { try await Actions.shutdown(d) } }
     func erase(_ d: Device) { perform(d) { try await Actions.erase(d) } }
+
+    /// Screenshot to ~/Desktop and reveal the file in Finder.
+    func screenshot(_ d: Device) {
+        perform(d) {
+            let path = try await SimCLI.run(["shot", d.id])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            await MainActor.run {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            }
+        }
+    }
+
+    /// Permanently delete a simulator/AVD (the CLI cleans favorites too).
+    func deleteDevice(_ d: Device) {
+        perform(d) { try await SimCLI.run(["rm", d.id], input: "y\n") }
+    }
 
     func shutdownAll() {
         let snapshot = devices
