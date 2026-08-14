@@ -40,6 +40,10 @@ relaunched only when `app/` changed, and MCP dependencies are reinstalled
 only when they moved. `sim version` shows what you're on, and
 `git pull && ./install.sh` is the manual equivalent.
 
+The app has the same mechanism built in: **Check for Updates…** in the menu
+bar fetches the repo, tells you what version is available, and runs the
+update for you (quitting and relaunching itself if the app changed).
+
 Releases are tagged (`vX.Y.Z`) with notes on the
 [Releases page](https://github.com/rialdana/simulators/releases). You can
 also just ask your AI agent to update — the MCP server exposes a
@@ -68,7 +72,8 @@ shut down, erase), a Running section for quick access, Shut Down All, and
 device grouped by iOS runtime and Android, with search (loose matching, like
 the CLI), an All/iOS/Android filter, and per-row action buttons. State
 refreshes every 5 seconds, so devices booted from Xcode, Android Studio, or
-the CLI show up too. There's a "Start at Login" toggle in the menu.
+the CLI show up too. There's a "Start at Login" toggle and a
+"Check for Updates…" item in the menu.
 
 ## Favorites
 

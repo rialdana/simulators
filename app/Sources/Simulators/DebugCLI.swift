@@ -5,6 +5,7 @@ import Foundation
 enum DebugCLI {
     static func runIfNeeded() {
         debugAndroidIfNeeded()
+        checkUpdateIfNeeded()
         guard CommandLine.arguments.contains("--list") else { return }
         let semaphore = DispatchSemaphore(value: 0)
         Task.detached {
@@ -13,6 +14,23 @@ enum DebugCLI {
             for d in devices {
                 let fav = favorites.contains(d.id) ? "★" : "-"
                 print("\(d.platform.rawValue)\t\(d.os)\t\(d.name)\t\(d.booted ? "Booted" : "Off")\t\(fav)")
+            }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        exit(0)
+    }
+
+    /// `Simulators --check-update` prints the update status and exits.
+    private static func checkUpdateIfNeeded() {
+        guard CommandLine.arguments.contains("--check-update") else { return }
+        let semaphore = DispatchSemaphore(value: 0)
+        Task.detached {
+            do {
+                let s = try await Updater.check()
+                print("repo=\(Updater.repoPath ?? "?") current=\(s.current) latest=\(s.latest) behind=\(s.commitsBehind)")
+            } catch {
+                print("check failed: \(error.localizedDescription)")
             }
             semaphore.signal()
         }

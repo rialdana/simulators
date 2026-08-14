@@ -54,6 +54,7 @@ struct MenuContent: View {
 
         Section {
             LaunchAtLoginToggle()
+            Button("Check for Updates…") { Task { await UpdateFlow.run() } }
             Button("Quit Simulators") { NSApp.terminate(nil) }
         }
     }

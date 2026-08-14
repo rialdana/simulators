@@ -360,6 +360,9 @@ do_version() {
 
 do_update() {
   local repo old new was_running=0
+  # When triggered from the app, we inherit the minimal GUI PATH — make
+  # sure Homebrew tools (npm) are reachable.
+  PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
   repo="$(repo_dir)"
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || die "$repo is not a git checkout — reinstall from https://github.com/rialdana/simulators"
