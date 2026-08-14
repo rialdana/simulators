@@ -30,6 +30,9 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   Missing Android system images download automatically (slow).
 - `sim rm <name|id>` — permanently delete a device. Prompts on stdin;
   destructive, so confirm with the user before piping `y`.
+- `sim rename <name|id> <new name>` — rename a device. Android names are
+  restricted to `[A-Za-z0-9._-]` and a running emulator is shut down
+  first; favorites follow the rename on both platforms.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -43,8 +46,8 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 `list_devices`, `boot_device`, `cold_boot_device`, `shutdown_device`,
 `erase_device` (destructive), `boot_favorites`, `shutdown_all`,
 `screenshot_device` (returns the image — use it to see the device screen),
-`list_device_models`, `create_device`, `delete_device` (destructive),
-`self_update`. Register in Claude Code with:
+`list_device_models`, `create_device`, `rename_device`, `delete_device`
+(destructive), `self_update`. Register in Claude Code with:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js

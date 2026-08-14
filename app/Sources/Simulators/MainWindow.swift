@@ -275,6 +275,7 @@ struct DeviceRow: View {
                 if device.booted && device.platform == .ios {
                     Button("Show in Simulator") { store.boot(device) }
                 }
+                Button("Rename…") { RenameFlow.run(device, store: store) }
                 Divider()
                 Button("Erase All Content & Settings…", role: .destructive) { onErase() }
                 Button("Delete Device…", role: .destructive) { onDelete() }

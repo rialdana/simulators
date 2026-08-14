@@ -76,6 +76,11 @@ final class DeviceStore: ObservableObject {
         perform(d) { try await SimCLI.run(["rm", d.id], input: "y\n") }
     }
 
+    /// Rename via the CLI, which also migrates Android favorites.
+    func rename(_ d: Device, to newName: String) {
+        perform(d) { try await SimCLI.run(["rename", d.id, newName], timeout: 180) }
+    }
+
     func shutdownAll() {
         let snapshot = devices
         busy.formUnion(snapshot.filter(\.booted).map(\.id))

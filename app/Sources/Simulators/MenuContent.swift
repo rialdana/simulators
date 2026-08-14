@@ -94,6 +94,7 @@ struct DeviceActionsMenu: View {
             Button(store.isFavorite(device) ? "Remove from Favorites" : "Add to Favorites") {
                 store.toggleFavorite(device)
             }
+            Button("Rename…") { RenameFlow.run(device, store: store) }
             Menu("Erase…") {
                 Button("Erase All Content & Settings", role: .destructive) { store.erase(device) }
             }

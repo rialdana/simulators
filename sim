@@ -15,6 +15,7 @@
 #   sim create ...         create a device: sim create ios|android <model> <os> [--name <n>]
 #                          (interactive when run with no arguments)
 #   sim rm <name|id>       delete a simulator/AVD permanently (asks first)
+#   sim rename <name> <new>  rename a device (Android: shuts it down first)
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -600,6 +601,31 @@ do_rm() { # index
   echo "Deleted ${D_NAME[$i]}."
 }
 
+do_rename() { # index new-name
+  local i=$1 new="$2"
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl rename "${D_ID[$i]}" "$new" || die "simctl rename failed"
+  else
+    printf '%s' "$new" | grep -qE '^[A-Za-z0-9._-]+$' \
+      || die "Android emulator names may only contain letters, numbers, '.', '_' and '-'"
+    if [ -n "${D_SERIAL[$i]}" ]; then
+      echo "Shutting down ${D_NAME[$i]} first (emulators can't be renamed while running)..."
+      "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
+      wait_gone "${D_SERIAL[$i]}"
+    fi
+    [ -n "$AVDMANAGER" ] || die "avdmanager not found — install it with: brew install --cask android-commandlinetools"
+    local errout
+    errout="$(ANDROID_HOME="$ANDROID_SDK" "$AVDMANAGER" move avd -n "${D_ID[$i]}" -r "$new" 2>&1 >/dev/null)" \
+      || { printf '%s\n' "$errout" >&2; die "avdmanager rename failed"; }
+    # Android favorites key on the AVD name — carry the star over.
+    if [ -f "$FAV_FILE" ] && grep -qxF "${D_ID[$i]}" "$FAV_FILE"; then
+      { grep -vxF "${D_ID[$i]}" "$FAV_FILE"; printf '%s\n' "$new"; } > "$FAV_FILE.tmp" \
+        && mv "$FAV_FILE.tmp" "$FAV_FILE"
+    fi
+  fi
+  echo "Renamed ${D_NAME[$i]} → $new"
+}
+
 pick_booted() { # sets SEL to the only booted device, or asks/errors
   local idxs=() i
   for ((i = 0; i < ${#D_NAME[@]}; i++)); do
@@ -780,6 +806,15 @@ main() {
       cmd_create "$@" ;;
     rm | remove)
       load_all; resolve "$@"; do_rm "$SEL" ;;
+    rename)
+      load_all
+      [ $# -ge 2 ] || die "usage: sim rename <device> <new name>"
+      # The last argument is the new name; everything before it finds the device.
+      RN_ARGS=("$@")
+      RN_NEW="${RN_ARGS[$((${#RN_ARGS[@]} - 1))]}"
+      unset "RN_ARGS[$((${#RN_ARGS[@]} - 1))]"
+      resolve "${RN_ARGS[@]}"
+      do_rename "$SEL" "$RN_NEW" ;;
     models)
       case "${1:-}" in
         ios) models_ios "$([ "${2:-}" = "--json" ] && echo 1 || echo 0)" ;;

@@ -1,6 +1,6 @@
 {
   "name": "simulators-mcp",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "description": "MCP server exposing iOS simulators and Android emulators (list, boot, cold boot, shutdown, erase, favorites)",
   "type": "module",
   "bin": { "simulators-mcp": "./server.js" },

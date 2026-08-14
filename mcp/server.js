@@ -67,7 +67,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.3.0" });
+const server = new McpServer({ name: "simulators", version: "1.5.0" });
 
 server.registerTool(
   "list_devices",
@@ -220,6 +220,23 @@ server.registerTool(
     const args = ["create", platform, model, osVersion];
     if (name) args.push("--name", name);
     return text(await runSim(args, { timeoutMs: 900_000 }));
+  }
+);
+
+server.registerTool(
+  "rename_device",
+  {
+    title: "Rename a device",
+    description:
+      "Rename a simulator or emulator. Android emulator names may only contain letters, numbers, '.', '_' and '-', and a running emulator is shut down first automatically. Favorites follow the rename.",
+    inputSchema: {
+      name: z.string().describe("Current device name or id"),
+      new_name: z.string().describe("The new name"),
+    },
+  },
+  async ({ name, new_name }) => {
+    const d = await resolveDevice(name);
+    return text(await runSim(["rename", d.id, new_name], { timeoutMs: 180_000 }));
   }
 );
 

@@ -108,7 +108,8 @@ use whichever fits:
   exposing typed tools: `list_devices`, `boot_device`, `cold_boot_device`,
   `shutdown_device`, `erase_device` and `delete_device` (flagged
   destructive), `boot_favorites`, `shutdown_all`, `screenshot_device`,
-  `list_device_models`, `create_device`, and `self_update`. It shells out
+  `list_device_models`, `create_device`, `rename_device`, and
+  `self_update`. It shells out
   to `sim`, so all layers share one implementation. Works with any MCP
   client (Claude Code, Claude Desktop, Cursor, ...).
 
@@ -145,6 +146,7 @@ sim erase [name]       factory reset a device (asks for confirmation)
 sim shot [name]        screenshot a booted device (to ~/Desktop, or --out <path>)
 sim create ...         create a device (interactive, or ios|android <model> <os>)
 sim rm <name>          delete a simulator/AVD permanently (asks first)
+sim rename <name> <new>  rename a device (favorites follow the rename)
 sim models [platform]  list creatable models and OS versions (--json)
 sim <name>             shorthand for `sim boot <name>`
 ```
