@@ -32,7 +32,8 @@ enum Updater {
 
     static func check() async throws -> Status {
         guard let repo = repoPath else { throw UpdaterError.repoNotFound }
-        try await Shell.run("/usr/bin/git", ["-C", repo, "fetch", "--quiet", "origin"])
+        // A stalled network fetch should surface as an error, not a hang.
+        try await Shell.run("/usr/bin/git", ["-C", repo, "fetch", "--quiet", "origin"], timeout: 30)
         func describe(_ ref: [String]) async -> String {
             ((try? await Shell.run("/usr/bin/git", ["-C", repo, "describe", "--tags", "--always"] + ref)) ?? "unknown")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
