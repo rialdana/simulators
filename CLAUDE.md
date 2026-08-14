@@ -35,6 +35,12 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   display name (`avd.ini.displayname`); the underlying id — shown in
   `sim ls --json` and used by adb/emulator — stays stable. Names in
   listings are display names; matching accepts either form.
+- `sim clear <app> [--device <name>]` — reset one app to fresh-install
+  state (data + cache) on a booted device. `<app>` is a name hint or exact
+  bundle/package id. Destructive to that app's data — confirm with the
+  user first. Ambiguous hints exit non-zero listing candidates; ask the
+  user which one, then retry with the exact id. `--device` is only needed
+  when several devices are booted.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -49,7 +55,8 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 `erase_device` (destructive), `boot_favorites`, `shutdown_all`,
 `screenshot_device` (returns the image — use it to see the device screen),
 `list_device_models`, `create_device`, `rename_device`, `delete_device`
-(destructive), `self_update`. Register in Claude Code with:
+(destructive), `clear_app_data` (destructive), `self_update`. Register in
+Claude Code with:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js

@@ -43,14 +43,21 @@ const norm = (s) => s.toLowerCase().replace(/[ _-]/g, "");
 
 // Resolve a loose name to exactly one device, mirroring the CLI's rules:
 // exact id wins, otherwise normalized substring match must be unique.
-async function resolveDevice(name) {
+async function resolveDevice(name, { preferBooted = false } = {}) {
   const devices = await listDevices();
   const exact = devices.find((d) => d.id === name);
   if (exact) return exact;
   const q = norm(name);
   // Match display name or id — Android AVDs can have a pretty display name
   // ("Pixel 9 Pro XL") on top of their restricted id (Pixel_9_Pro_XL).
-  const matches = devices.filter((d) => norm(d.name).includes(q) || norm(d.id).includes(q));
+  let matches = devices.filter((d) => norm(d.name).includes(q) || norm(d.id).includes(q));
+  // For booted-only operations (screenshot, app clear), a unique booted
+  // match settles ambiguity — e.g. one booted "iPhone 17 Pro Max" among
+  // three runtimes.
+  if (preferBooted && matches.length > 1) {
+    const booted = matches.filter((d) => d.state === "booted");
+    if (booted.length >= 1) matches = booted;
+  }
   if (matches.length === 1) return matches[0];
   if (matches.length === 0) {
     throw new Error(`No device matches "${name}". Use list_devices to see what exists.`);
@@ -69,7 +76,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.6.0" });
+const server = new McpServer({ name: "simulators", version: "1.7.0" });
 
 server.registerTool(
   "list_devices",
@@ -175,7 +182,7 @@ server.registerTool(
   async ({ name }) => {
     const args = ["shot"];
     if (name) {
-      const d = await resolveDevice(name);
+      const d = await resolveDevice(name, { preferBooted: true });
       args.push(d.id);
     }
     const tmp = path.join(os.tmpdir(), `sim-shot-${process.pid}-${Date.now()}.png`);
@@ -254,6 +261,28 @@ server.registerTool(
   async ({ name }) => {
     const d = await resolveDevice(name);
     return text(await runSim(["rm", d.id], { input: "y\n" }));
+  }
+);
+
+server.registerTool(
+  "clear_app_data",
+  {
+    title: "Clear an app's data & cache",
+    description:
+      "Reset one app to a fresh-install state on a booted device (Android: pm clear; iOS: reinstall in place). `app` is a name hint or an exact bundle/package id. Destructive to that app's data — confirm with the user first. If several apps match the hint, the call fails and lists the candidates: ask the user which one they mean, then retry with the exact id. `device` is required only when more than one device is booted.",
+    inputSchema: {
+      app: z.string().describe("App name hint, or exact bundle id (iOS) / package id (Android)"),
+      device: z.string().optional().describe("Device name or id; omit if only one device is booted"),
+    },
+    annotations: { destructiveHint: true },
+  },
+  async ({ app, device }) => {
+    const args = ["clear", app];
+    if (device) {
+      const d = await resolveDevice(device, { preferBooted: true });
+      args.push("--device", d.id);
+    }
+    return text(await runSim(args, { timeoutMs: 180_000 }));
   }
 );
 

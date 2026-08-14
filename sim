@@ -16,6 +16,9 @@
 #                          (interactive when run with no arguments)
 #   sim rm <name|id>       delete a simulator/AVD permanently (asks first)
 #   sim rename <name> <new>  rename a device (Android: edits the display name)
+#   sim clear <app>        reset an app to fresh-install state (data + cache);
+#                          app is a name hint or bundle/package id; add
+#                          --device <name> when several devices are booted
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -397,14 +400,16 @@ toggle_fav() { # index
 }
 
 # ------------------------------------------------------------ create/rm/shot --
-parse_flags() { # sets NAME_FLAG, OUT_FLAG, POS=(positional args)
-  NAME_FLAG=""; OUT_FLAG=""; POS=()
+parse_flags() { # sets NAME_FLAG, OUT_FLAG, DEVICE_FLAG, POS=(positional args)
+  NAME_FLAG=""; OUT_FLAG=""; DEVICE_FLAG=""; POS=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --name) shift; NAME_FLAG="${1:-}" ;;
       --name=*) NAME_FLAG="${1#--name=}" ;;
       --out) shift; OUT_FLAG="${1:-}" ;;
       --out=*) OUT_FLAG="${1#--out=}" ;;
+      --device | -d) shift; DEVICE_FLAG="${1:-}" ;;
+      --device=*) DEVICE_FLAG="${1#--device=}" ;;
       *) POS[${#POS[@]}]="$1" ;;
     esac
     shift
@@ -673,6 +678,7 @@ pick_booted() { # sets SEL to the only booted device, or asks/errors
   esac
 }
 
+# Shared by shot and clear — both only make sense on booted devices.
 resolve_shot() { # [query...] -> sets SEL; prefers booted devices on ambiguity
   if [ $# -gt 0 ] && [ -n "$*" ]; then
     find_matches "$*"
@@ -718,6 +724,97 @@ do_shot() { # index [outpath] — echoes the written path
     "$ADB" -s "${D_SERIAL[$i]}" exec-out screencap -p > "$out" || die "screenshot failed"
   fi
   echo "$out"
+}
+
+# --------------------------------------------------------------- app clear --
+list_apps() { # device-index -> lines of "id<TAB>label" (user-installed apps)
+  local i=$1
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl listapps "${D_ID[$i]}" 2>/dev/null \
+      | plutil -convert json -o - - 2>/dev/null \
+      | jq -r 'to_entries[] | select(.value.ApplicationType == "User")
+               | [.key, (.value.CFBundleDisplayName // .value.CFBundleName // .key)] | @tsv'
+  else
+    "$ADB" -s "${D_SERIAL[$i]}" shell pm list packages -3 2>/dev/null \
+      | tr -d '\r' | sed -n 's/^package://p' \
+      | awk '{print $1 "\t" $1}'
+  fi
+}
+
+do_clear() { # device-index app-hint
+  local i=$1 hint="$2"
+  [ "${D_STATE[$i]}" = "Booted" ] || die "${D_NAME[$i]} must be booted to clear app data"
+  APP_IDS=(); APP_LABELS=()
+  local id label
+  while IFS=$'\t' read -r id label; do
+    [ -n "$id" ] || continue
+    APP_IDS[${#APP_IDS[@]}]="$id"
+    APP_LABELS[${#APP_LABELS[@]}]="$label"
+  done < <(list_apps "$i")
+  [ ${#APP_IDS[@]} -gt 0 ] || die "no user-installed apps found on ${D_NAME[$i]}"
+
+  # Exact id wins; otherwise loose match on id and label.
+  local j nq sel="" matches=()
+  for ((j = 0; j < ${#APP_IDS[@]}; j++)); do
+    [ "$hint" = "${APP_IDS[$j]}" ] && { sel="$j"; break; }
+  done
+  if [ -z "$sel" ]; then
+    nq="$(norm "$hint")"
+    for ((j = 0; j < ${#APP_IDS[@]}; j++)); do
+      case "$(norm "${APP_IDS[$j]}")|$(norm "${APP_LABELS[$j]}")" in
+        *"$nq"*) matches[${#matches[@]}]="$j" ;;
+      esac
+    done
+    case ${#matches[@]} in
+      0)
+        echo "Apps on ${D_NAME[$i]}:" >&2
+        for ((j = 0; j < ${#APP_IDS[@]}; j++)); do
+          printf '  %s (%s)\n' "${APP_LABELS[$j]}" "${APP_IDS[$j]}" >&2
+        done
+        die "no app matching '$hint' on ${D_NAME[$i]}"
+        ;;
+      1) sel="${matches[0]}" ;;
+      *)
+        echo "Multiple apps match '$hint' on ${D_NAME[$i]}:" >&2
+        local n=1
+        for j in "${matches[@]}"; do
+          printf '  %2d) %s (%s)\n' "$n" "${APP_LABELS[$j]}" "${APP_IDS[$j]}" >&2
+          n=$((n + 1))
+        done
+        [ -t 0 ] || die "ambiguous app — pass the exact bundle/package id"
+        local c
+        printf "Clear which one? (1-%d, q to quit): " "${#matches[@]}" >&2
+        read -r c
+        case "$c" in q | Q | "") echo "Cancelled."; return 0 ;; esac
+        printf '%s' "$c" | grep -qE '^[0-9]+$' || die "not a number: $c"
+        { [ "$c" -ge 1 ] && [ "$c" -le ${#matches[@]} ]; } || die "out of range: $c"
+        sel="${matches[$((c - 1))]}"
+        ;;
+    esac
+  fi
+
+  local app_id="${APP_IDS[$sel]}" app_label="${APP_LABELS[$sel]}"
+  echo "Clearing data & cache of $app_label ($app_id) on ${D_NAME[$i]}..."
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    # iOS has no pm clear: reinstalling the same .app is the reliable way
+    # to get a true fresh-install state (data, caches, preferences).
+    local udid="${D_ID[$i]}" app_path tmp
+    app_path="$(xcrun simctl get_app_container "$udid" "$app_id" app 2>/dev/null)" \
+      || die "couldn't locate the app bundle for $app_id"
+    tmp="$(mktemp -d)"
+    cp -R "$app_path" "$tmp/" || { rm -rf "$tmp"; die "couldn't copy the app bundle"; }
+    xcrun simctl terminate "$udid" "$app_id" >/dev/null 2>&1
+    xcrun simctl uninstall "$udid" "$app_id" \
+      || { rm -rf "$tmp"; die "uninstall failed"; }
+    xcrun simctl install "$udid" "$tmp/$(basename "$app_path")" \
+      || die "reinstall failed — a copy of the app bundle is preserved at $tmp"
+    rm -rf "$tmp"
+  else
+    local out
+    out="$("$ADB" -s "${D_SERIAL[$i]}" shell pm clear "$app_id" 2>&1 | tr -d '\r')"
+    [ "$out" = "Success" ] || die "pm clear failed: $out"
+  fi
+  echo "✓ $app_label is back to a fresh-install state."
 }
 
 repo_dir() {
@@ -833,6 +930,12 @@ main() {
       cmd_create "$@" ;;
     rm | remove)
       load_all; resolve "$@"; do_rm "$SEL" ;;
+    clear | appclear)
+      load_all
+      parse_flags "$@"
+      [ ${#POS[@]} -ge 1 ] || die "usage: sim clear <app name or id> [--device <device>]"
+      if [ -n "$DEVICE_FLAG" ]; then resolve_shot "$DEVICE_FLAG"; else pick_booted; fi
+      do_clear "$SEL" "${POS[*]}" ;;
     rename)
       load_all
       [ $# -ge 2 ] || die "usage: sim rename <device> <new name>"

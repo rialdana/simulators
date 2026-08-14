@@ -108,8 +108,8 @@ use whichever fits:
   exposing typed tools: `list_devices`, `boot_device`, `cold_boot_device`,
   `shutdown_device`, `erase_device` and `delete_device` (flagged
   destructive), `boot_favorites`, `shutdown_all`, `screenshot_device`,
-  `list_device_models`, `create_device`, `rename_device`, and
-  `self_update`. It shells out
+  `list_device_models`, `create_device`, `rename_device`,
+  `clear_app_data` (destructive), and `self_update`. It shells out
   to `sim`, so all layers share one implementation. Works with any MCP
   client (Claude Code, Claude Desktop, Cursor, ...).
 
@@ -147,6 +147,7 @@ sim shot [name]        screenshot a booted device (to ~/Desktop, or --out <path>
 sim create ...         create a device (interactive, or ios|android <model> <os>)
 sim rm <name>          delete a simulator/AVD permanently (asks first)
 sim rename <name> <new>  rename a device (spaces fine, works while running)
+sim clear <app>        reset one app to fresh-install state (data + cache)
 sim models [platform]  list creatable models and OS versions (--json)
 sim <name>             shorthand for `sim boot <name>`
 ```
@@ -168,6 +169,13 @@ sim kill all           # shuts down every simulator and emulator
 
 If a name matches more than one device (e.g. the same iPhone across several
 iOS runtimes), you get a numbered picker.
+
+`sim clear` resets a single app instead of the whole device: pass an app
+name hint or an exact bundle/package id (`sim clear allball`). Android uses
+`pm clear`; iOS reinstalls the same .app in place, which yields a true
+fresh-install state. If several apps match the hint you're shown the
+candidates and asked to choose; when several devices are booted, add
+`--device <name>`.
 
 Android devices show their **display name** ("Pixel 9 Pro XL") everywhere,
 like Android Studio does. `sim rename` edits that display name — spaces and
