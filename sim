@@ -9,6 +9,8 @@
 #   sim kill [name|all]    shut down a device, or everything
 #   sim erase [name]       factory reset a device (asks for confirmation)
 #   sim fav [name]         toggle a favorite (marked ★, listed first)
+#   sim boot favs          boot every favorite (also works: cold favs, kill favs)
+#   sim ls --json          machine-readable device list (for scripts and agents)
 #   sim <name>             shorthand for `sim boot <name>`
 #
 # Names match loosely (case-insensitive, spaces/underscores/dashes ignored):
@@ -140,11 +142,34 @@ print_devices() {
   done
 }
 
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+print_json() {
+  local i sep="" state fav serial
+  printf '{"devices":['
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    state="off"; [ "${D_STATE[$i]}" = "Booted" ] && state="booted"
+    fav=false; is_fav "${D_ID[$i]}" && fav=true
+    serial=null; [ -n "${D_SERIAL[$i]}" ] && serial="\"${D_SERIAL[$i]}\""
+    printf '%s{"platform":"%s","name":"%s","id":"%s","os":"%s","state":"%s","favorite":%s,"serial":%s}' \
+      "$sep" "${D_PLATFORM[$i]}" "$(json_escape "${D_NAME[$i]}")" "${D_ID[$i]}" \
+      "${D_OS[$i]}" "$state" "$fav" "$serial"
+    sep=","
+  done
+  printf ']}\n'
+}
+
 # ---------------------------------------------------------------- selection --
 norm() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' _-'; }
 
 find_matches() { # query -> MATCHES=(indices)
-  local q i; q="$(norm "$1")"; MATCHES=()
+  local q i; MATCHES=()
+  # An exact id (simulator UDID or AVD name) wins outright, so scripts and
+  # agents can address a device unambiguously.
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    if [ "$1" = "${D_ID[$i]}" ]; then MATCHES=("$i"); return; fi
+  done
+  q="$(norm "$1")"
   for ((i = 0; i < ${#D_NAME[@]}; i++)); do
     case "$(norm "${D_NAME[$i]}")" in
       *"$q"*) MATCHES[${#MATCHES[@]}]="$i" ;;
@@ -182,7 +207,13 @@ resolve() { # [query...] -> sets SEL
       1) SEL="${MATCHES[0]}" ;;
       *)
         echo "Multiple devices match '$*':"
-        choose_from "${MATCHES[@]}"
+        if [ -t 0 ]; then
+          choose_from "${MATCHES[@]}"
+        else
+          local i
+          for i in "${MATCHES[@]}"; do printf "  %s  id=%s\n" "$(device_line "$i")" "${D_ID[$i]}"; done
+          die "ambiguous name — pass the exact id (see 'sim ls --json')"
+        fi
         ;;
     esac
   else
@@ -291,6 +322,14 @@ do_erase() { # index
   fi
 }
 
+do_favs() { # action-fn — run an action on every favorite
+  local fn=$1 i found=0
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    if is_fav "${D_ID[$i]}"; then found=1; "$fn" "$i"; fi
+  done
+  [ $found -eq 1 ] || die "no favorites yet — add one with 'sim fav <name>'"
+}
+
 toggle_fav() { # index
   local id="${D_ID[$1]}" name="${D_NAME[$1]}"
   mkdir -p "$(dirname "$FAV_FILE")"
@@ -332,14 +371,27 @@ main() {
     "" | menu)
       load_all; interactive ;;
     ls | list | status)
-      load_all; print_devices ;;
+      load_all
+      if [ "${1:-}" = "--json" ]; then print_json; else print_devices; fi ;;
     boot | start | launch)
-      load_all; resolve "$@"; do_boot "$SEL" ;;
+      load_all
+      case "${1:-}" in
+        favs | favorites) do_favs do_boot ;;
+        *) resolve "$@"; do_boot "$SEL" ;;
+      esac ;;
     cold | restart | reboot)
-      load_all; resolve "$@"; do_cold "$SEL" ;;
+      load_all
+      case "${1:-}" in
+        favs | favorites) do_favs do_cold ;;
+        *) resolve "$@"; do_cold "$SEL" ;;
+      esac ;;
     kill | shutdown | stop | down)
       load_all
-      if [ "${1:-}" = "all" ]; then kill_all; else resolve "$@"; do_kill "$SEL"; fi ;;
+      case "${1:-}" in
+        all) kill_all ;;
+        favs | favorites) do_favs do_kill ;;
+        *) resolve "$@"; do_kill "$SEL" ;;
+      esac ;;
     erase | wipe | reset)
       load_all; resolve "$@"; do_erase "$SEL" ;;
     fav | favorite | star | unfav)

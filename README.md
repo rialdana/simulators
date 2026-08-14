@@ -63,6 +63,34 @@ Favorites are stored as one device id per line in
 `~/.config/sim/favorites`, shared by the app and the CLI — star something in
 one and it shows starred in the other.
 
+## AI agents (MCP)
+
+Tell Claude "launch my favorite simulators" and it happens. Three layers,
+use whichever fits:
+
+- **`sim ls --json`** — machine-readable device list (platform, name, id,
+  os, state, favorite, adb serial). Any agent with shell access can drive
+  the CLI directly; ambiguous names fail non-interactively with the
+  candidate ids, so scripts never hang on a picker.
+- **`CLAUDE.md`** — teaches Claude Code the commands and when to reach for
+  them the moment it works in this repo.
+- **`mcp/server.js`** — an MCP (Model Context Protocol) stdio server
+  exposing typed tools: `list_devices`, `boot_device`, `cold_boot_device`,
+  `shutdown_device`, `erase_device` (flagged destructive), `boot_favorites`,
+  and `shutdown_all`. It shells out to `sim`, so all three layers share one
+  implementation. Works with any MCP client (Claude Code, Claude Desktop,
+  Cursor, ...).
+
+Set it up:
+
+```
+cd mcp && npm install
+claude mcp add --scope user simulators -- node "$PWD/server.js"
+```
+
+For other MCP clients, configure a stdio server with command `node` and
+args `["<repo>/mcp/server.js"]`.
+
 Rebuild and reinstall after changing the source:
 
 ```
