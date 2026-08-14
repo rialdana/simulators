@@ -21,6 +21,15 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   it is destructive, so confirm with the user before piping `y`.
 - `sim boot favs` / `sim cold favs` / `sim kill favs` — act on every
   favorite. `sim fav <name|id>` toggles a favorite.
+- `sim shot [name] [--out <path>]` — screenshot a booted device; prints the
+  written PNG path (default ~/Desktop). Ambiguous names prefer the booted
+  match; with one device booted the name can be omitted.
+- `sim create ios|android <model> <os> [--name <n>]` — create a device,
+  e.g. `sim create ios "iPhone 17 Pro" 26.2` or `sim create android
+  pixel_9 36`. `sim models <platform> --json` lists valid models/versions.
+  Missing Android system images download automatically (slow).
+- `sim rm <name|id>` — permanently delete a device. Prompts on stdin;
+  destructive, so confirm with the user before piping `y`.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -33,6 +42,8 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 `mcp/server.js` exposes the same operations as typed MCP tools over stdio:
 `list_devices`, `boot_device`, `cold_boot_device`, `shutdown_device`,
 `erase_device` (destructive), `boot_favorites`, `shutdown_all`,
+`screenshot_device` (returns the image — use it to see the device screen),
+`list_device_models`, `create_device`, `delete_device` (destructive),
 `self_update`. Register in Claude Code with:
 
 ```

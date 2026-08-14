@@ -99,10 +99,16 @@ use whichever fits:
   them the moment it works in this repo.
 - **`mcp/server.js`** — an MCP (Model Context Protocol) stdio server
   exposing typed tools: `list_devices`, `boot_device`, `cold_boot_device`,
-  `shutdown_device`, `erase_device` (flagged destructive), `boot_favorites`,
-  `shutdown_all`, and `self_update`. It shells out to `sim`, so all three
-  layers share one implementation. Works with any MCP client (Claude Code,
-  Claude Desktop, Cursor, ...).
+  `shutdown_device`, `erase_device` and `delete_device` (flagged
+  destructive), `boot_favorites`, `shutdown_all`, `screenshot_device`,
+  `list_device_models`, `create_device`, and `self_update`. It shells out
+  to `sim`, so all layers share one implementation. Works with any MCP
+  client (Claude Code, Claude Desktop, Cursor, ...).
+
+`screenshot_device` returns the actual image, so Claude can *see* the
+simulator screen — "boot my favorites, screenshot both, and tell me if the
+layout is broken on Android" works end to end. And `create_device` means
+"create a Pixel 9 with Android 36 and boot it" needs no Android Studio.
 
 Set it up:
 
@@ -129,8 +135,18 @@ sim boot [name]        boot a device (Android resumes its quick-boot snapshot)
 sim cold [name]        cold boot: full shutdown, then a fresh start
 sim kill [name|all]    shut down a device, or everything at once
 sim erase [name]       factory reset a device (asks for confirmation)
+sim shot [name]        screenshot a booted device (to ~/Desktop, or --out <path>)
+sim create ...         create a device (interactive, or ios|android <model> <os>)
+sim rm <name>          delete a simulator/AVD permanently (asks first)
+sim models [platform]  list creatable models and OS versions (--json)
 sim <name>             shorthand for `sim boot <name>`
 ```
+
+Creating devices needs no Android Studio: `sim create ios "iPhone 17 Pro"
+26.2` uses simctl, and `sim create android pixel_9 36` uses avdmanager —
+downloading the system image first if it's missing, and installing
+cmdline-tools into the SDK automatically the first time (via Homebrew's
+`android-commandlinetools` if nothing else is available).
 
 Names match loosely — case-insensitive, and spaces/underscores/dashes are
 ignored:

@@ -4,6 +4,8 @@
 // the single source of truth for device logic.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -65,7 +67,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.1.0" });
+const server = new McpServer({ name: "simulators", version: "1.3.0" });
 
 server.registerTool(
   "list_devices",
@@ -155,6 +157,85 @@ server.registerTool(
     description: "Shut down every running iOS simulator and Android emulator.",
   },
   async () => text((await runSim(["kill", "all"], { timeoutMs: 180_000 })) || "Everything shut down.")
+);
+
+server.registerTool(
+  "screenshot_device",
+  {
+    title: "Screenshot a device",
+    description:
+      "Take a screenshot of a booted simulator/emulator and return it as an image, so you can see what's currently on the device's screen. Omit name when exactly one device is booted. Ambiguous names prefer the booted match.",
+    inputSchema: {
+      name: z.string().optional().describe("Device name or id; omit if only one device is booted"),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ name }) => {
+    const args = ["shot"];
+    if (name) {
+      const d = await resolveDevice(name);
+      args.push(d.id);
+    }
+    const tmp = path.join(os.tmpdir(), `sim-shot-${process.pid}-${Date.now()}.png`);
+    args.push("--out", tmp);
+    await runSim(args);
+    // Downscale so the image stays light in the model's context.
+    await new Promise((resolve, reject) => {
+      const p = spawn("/usr/bin/sips", ["-Z", "1200", tmp]);
+      p.on("close", (c) => (c === 0 ? resolve() : reject(new Error("sips resize failed"))));
+      p.on("error", reject);
+    });
+    const data = fs.readFileSync(tmp).toString("base64");
+    fs.unlinkSync(tmp);
+    return { content: [{ type: "image", data, mimeType: "image/png" }] };
+  }
+);
+
+server.registerTool(
+  "list_device_models",
+  {
+    title: "List creatable device models",
+    description:
+      "List the device models and OS versions available for creating a new simulator (iOS: device types + runtimes) or emulator (Android: device definitions + installed system images). Use before create_device.",
+    inputSchema: { platform: z.enum(["ios", "android"]) },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ platform }) => text(await runSim(["models", platform, "--json"]))
+);
+
+server.registerTool(
+  "create_device",
+  {
+    title: "Create a device",
+    description:
+      "Create a new iOS simulator or Android emulator. model: an iOS device type (e.g. 'iPhone 17 Pro') or Android device definition id (e.g. 'pixel_9'). os: an iOS version (e.g. '26.2') or Android API level (e.g. '36'). Missing Android system images are downloaded, which can take minutes. The device is created shut down — boot it separately.",
+    inputSchema: {
+      platform: z.enum(["ios", "android"]),
+      model: z.string().describe("Device model — see list_device_models"),
+      os: z.string().describe("iOS version or Android API level"),
+      name: z.string().optional().describe("Custom device name (defaults to a sensible one)"),
+    },
+  },
+  async ({ platform, model, os: osVersion, name }) => {
+    const args = ["create", platform, model, osVersion];
+    if (name) args.push("--name", name);
+    return text(await runSim(args, { timeoutMs: 900_000 }));
+  }
+);
+
+server.registerTool(
+  "delete_device",
+  {
+    title: "Delete a device (permanent)",
+    description:
+      "Permanently delete a simulator or emulator, including all of its data. This cannot be undone — confirm with the user before calling.",
+    inputSchema: nameArg,
+    annotations: { destructiveHint: true },
+  },
+  async ({ name }) => {
+    const d = await resolveDevice(name);
+    return text(await runSim(["rm", d.id], { input: "y\n" }));
+  }
 );
 
 server.registerTool(

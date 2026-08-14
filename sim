@@ -11,6 +11,11 @@
 #   sim fav [name]         toggle a favorite (marked ★, listed first)
 #   sim boot favs          boot every favorite (also works: cold favs, kill favs)
 #   sim ls --json          machine-readable device list (for scripts and agents)
+#   sim shot [name]        screenshot a booted device (to ~/Desktop, or --out <path>)
+#   sim create ...         create a device: sim create ios|android <model> <os> [--name <n>]
+#                          (interactive when run with no arguments)
+#   sim rm <name|id>       delete a simulator/AVD permanently (asks first)
+#   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
 #   sim <name>             shorthand for `sim boot <name>`
@@ -23,6 +28,18 @@ ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
 EMULATOR="$ANDROID_SDK/emulator/emulator"
 ADB="$ANDROID_SDK/platform-tools/adb"
 [ -x "$ADB" ] || ADB="$(command -v adb 2>/dev/null)"
+
+# avdmanager/sdkmanager live in cmdline-tools (inside the SDK, or via
+# `brew install --cask android-commandlinetools`).
+AVDMANAGER=""
+for _p in "$ANDROID_SDK/cmdline-tools/latest/bin/avdmanager" \
+          "$ANDROID_SDK/tools/bin/avdmanager" \
+          /opt/homebrew/bin/avdmanager /usr/local/bin/avdmanager; do
+  [ -x "$_p" ] && { AVDMANAGER="$_p"; break; }
+done
+SDKMANAGER=""
+[ -n "$AVDMANAGER" ] && [ -x "$(dirname "$AVDMANAGER")/sdkmanager" ] \
+  && SDKMANAGER="$(dirname "$AVDMANAGER")/sdkmanager"
 
 # Favorites are shared with Simulators.app: one device id per line.
 FAV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/sim/favorites"
@@ -345,6 +362,311 @@ toggle_fav() { # index
   fi
 }
 
+# ------------------------------------------------------------ create/rm/shot --
+parse_flags() { # sets NAME_FLAG, OUT_FLAG, POS=(positional args)
+  NAME_FLAG=""; OUT_FLAG=""; POS=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) shift; NAME_FLAG="${1:-}" ;;
+      --name=*) NAME_FLAG="${1#--name=}" ;;
+      --out) shift; OUT_FLAG="${1:-}" ;;
+      --out=*) OUT_FLAG="${1#--out=}" ;;
+      *) POS[${#POS[@]}]="$1" ;;
+    esac
+    shift
+  done
+}
+
+# Pick one entry from a named array by loose match: exact (normalized) wins,
+# unique substring wins, otherwise a numbered picker (tty) or an error
+# listing the candidates (non-tty). Echoes the chosen index.
+match_pick() { # arrayname label [query]
+  local arr=$1 label=$2 q="${3:-}" count i name c
+  eval "count=\${#${arr}[@]}"
+  [ "$count" -gt 0 ] || die "no $label options found"
+  local cand=()
+  if [ -n "$q" ]; then
+    local nq; nq="$(norm "$q")"
+    for ((i = 0; i < count; i++)); do
+      eval "name=\${${arr}[$i]}"
+      [ "$(norm "$name")" = "$nq" ] && { echo "$i"; return 0; }
+    done
+    for ((i = 0; i < count; i++)); do
+      eval "name=\${${arr}[$i]}"
+      case "$(norm "$name")" in *"$nq"*) cand[${#cand[@]}]="$i" ;; esac
+    done
+    [ ${#cand[@]} -eq 1 ] && { echo "${cand[0]}"; return 0; }
+    if [ ${#cand[@]} -eq 0 ]; then
+      [ -t 0 ] || die "no $label matching '$q' (see 'sim models')"
+      echo "No $label matching '$q' — pick one:" >&2
+      for ((i = 0; i < count; i++)); do cand[${#cand[@]}]="$i"; done
+    fi
+  else
+    [ -t 0 ] || die "missing $label (see 'sim models')"
+    for ((i = 0; i < count; i++)); do cand[${#cand[@]}]="$i"; done
+  fi
+  if [ ! -t 0 ]; then
+    for i in "${cand[@]}"; do eval "name=\${${arr}[$i]}"; echo "  $name" >&2; done
+    die "ambiguous $label '$q' — be more specific"
+  fi
+  local n=1
+  for i in "${cand[@]}"; do
+    eval "name=\${${arr}[$i]}"
+    printf "  %2d) %s\n" "$n" "$name" >&2
+    n=$((n + 1))
+  done
+  printf "Pick a %s (1-%d): " "$label" "${#cand[@]}" >&2
+  read -r c
+  printf '%s' "$c" | grep -qE '^[0-9]+$' || die "not a number: $c"
+  { [ "$c" -ge 1 ] && [ "$c" -le ${#cand[@]} ]; } || die "out of range: $c"
+  echo "${cand[$((c - 1))]}"
+}
+
+installed_images() { # echoes installed system image ids, one per line
+  local d
+  for d in "$ANDROID_SDK"/system-images/*/*/*/; do
+    [ -d "$d" ] || continue
+    printf '%s\n' "${d%/}" | sed "s|^$ANDROID_SDK/||; s|/|;|g"
+  done
+}
+
+models_ios() { # 1=json
+  local dts rts
+  dts="$(xcrun simctl list devicetypes --json | jq '[.devicetypes[]
+    | select(.productFamily == "iPhone" or .productFamily == "iPad")
+    | {name, id: .identifier}]')"
+  rts="$(xcrun simctl list runtimes --json | jq '[.runtimes[]
+    | select(.isAvailable and (.name | startswith("iOS")))
+    | {name, id: .identifier}]')"
+  if [ "${1:-0}" = "1" ]; then
+    jq -n --argjson m "$dts" --argjson r "$rts" \
+      '{platform: "ios", models: $m, os_versions: $r}'
+  else
+    echo "${BOLD}iOS device models${RESET}"
+    printf '%s' "$dts" | jq -r '.[].name' | sed 's/^/  /'
+    echo "${BOLD}iOS versions${RESET}"
+    printf '%s' "$rts" | jq -r '.[].name' | sed 's/^/  /'
+  fi
+}
+
+models_android() { # 1=json
+  [ -n "$AVDMANAGER" ] || die "avdmanager not found — install it with: brew install --cask android-commandlinetools"
+  local defs imgs
+  defs="$(ANDROID_HOME="$ANDROID_SDK" "$AVDMANAGER" list device -c 2>/dev/null | grep -E '^[A-Za-z0-9._ -]+$')"
+  imgs="$(installed_images)"
+  if [ "${1:-0}" = "1" ]; then
+    jq -n \
+      --argjson m "$(printf '%s' "$defs" | jq -R -s 'split("\n") | map(select(length > 0))')" \
+      --argjson i "$(printf '%s' "$imgs" | jq -R -s 'split("\n") | map(select(length > 0))')" \
+      '{platform: "android", models: $m, images_installed: $i,
+        note: "an API level (e.g. 36) picks an installed image; other images are downloaded via sdkmanager"}'
+  else
+    echo "${BOLD}Android device definitions${RESET}"
+    printf '%s\n' "$defs" | sed 's/^/  /'
+    echo "${BOLD}Installed system images${RESET}"
+    printf '%s\n' "$imgs" | sed 's/^/  /'
+  fi
+}
+
+create_ios() {
+  parse_flags "$@"
+  CT_NAMES=(); CT_IDS=(); RT_NAMES=(); RT_IDS=()
+  local n i
+  while IFS=$'\t' read -r n i; do
+    CT_NAMES[${#CT_NAMES[@]}]="$n"; CT_IDS[${#CT_IDS[@]}]="$i"
+  done < <(xcrun simctl list devicetypes --json | jq -r '.devicetypes[]
+    | select(.productFamily == "iPhone" or .productFamily == "iPad")
+    | [.name, .identifier] | @tsv')
+  while IFS=$'\t' read -r n i; do
+    RT_NAMES[${#RT_NAMES[@]}]="$n"; RT_IDS[${#RT_IDS[@]}]="$i"
+  done < <(xcrun simctl list runtimes --json | jq -r '.runtimes[]
+    | select(.isAvailable and (.name | startswith("iOS")))
+    | [.name, .identifier] | @tsv')
+  local di ri
+  di="$(match_pick CT_NAMES "device model" "${POS[0]:-}")" || exit 1
+  ri="$(match_pick RT_NAMES "iOS version" "${POS[1]:-}")" || exit 1
+  local name="${NAME_FLAG:-${CT_NAMES[$di]}}" udid
+  echo "Creating '$name' (${CT_NAMES[$di]}, ${RT_NAMES[$ri]})..."
+  udid="$(xcrun simctl create "$name" "${CT_IDS[$di]}" "${RT_IDS[$ri]}")" || die "simctl create failed"
+  echo "✓ Created $name ($udid) — boot it with: sim boot '$name'"
+}
+
+# avdmanager only sees system images when it lives INSIDE the SDK (it derives
+# the SDK root from its own path and ignores ANDROID_HOME). If we only have an
+# external copy (e.g. Homebrew's), use its sdkmanager to install cmdline-tools
+# into the SDK proper — the layout Google documents.
+ensure_sdk_cmdline_tools() {
+  case "$AVDMANAGER" in "$ANDROID_SDK"/*) return 0 ;; esac
+  [ -n "$SDKMANAGER" ] || die "avdmanager not found — install it with: brew install --cask android-commandlinetools"
+  echo "Installing cmdline-tools into the Android SDK (one-time, ~150MB)..."
+  yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK" "cmdline-tools;latest" >/dev/null \
+    || die "cmdline-tools install failed"
+  AVDMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/avdmanager"
+  SDKMANAGER="$ANDROID_SDK/cmdline-tools/latest/bin/sdkmanager"
+  [ -x "$AVDMANAGER" ] || die "cmdline-tools install didn't produce avdmanager"
+}
+
+create_android() {
+  ensure_sdk_cmdline_tools
+  parse_flags "$@"
+  DD_IDS=(); IMG_IDS=()
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] && DD_IDS[${#DD_IDS[@]}]="$d"
+  done < <(ANDROID_HOME="$ANDROID_SDK" "$AVDMANAGER" list device -c 2>/dev/null | grep -E '^[A-Za-z0-9._ -]+$')
+  while IFS= read -r d; do
+    [ -n "$d" ] && IMG_IDS[${#IMG_IDS[@]}]="$d"
+  done < <(installed_images)
+
+  local di image="" ii imgq="${POS[1]:-}"
+  di="$(match_pick DD_IDS "device definition" "${POS[0]:-}")" || exit 1
+  case "$imgq" in
+    system-images\;*) image="$imgq" ;;  # full image id, may need a download
+    *)
+      # A bare API level matches an installed image for that exact level.
+      if printf '%s' "$imgq" | grep -qE '^[0-9]+$'; then
+        for d in "${IMG_IDS[@]}"; do
+          case "$d" in *";android-$imgq;"*) image="$d"; break ;; esac
+        done
+      fi
+      if [ -z "$image" ]; then
+        ii="$(match_pick IMG_IDS "system image" "$imgq")" || exit 1
+        image="${IMG_IDS[$ii]}"
+      fi
+      ;;
+  esac
+
+  if [ ! -d "$ANDROID_SDK/$(printf '%s' "$image" | tr ';' '/')" ]; then
+    [ -n "$SDKMANAGER" ] || die "sdkmanager not found — can't download $image"
+    echo "Downloading $image (this can take several minutes)..."
+    yes | ANDROID_HOME="$ANDROID_SDK" "$SDKMANAGER" --sdk_root="$ANDROID_SDK" "$image" \
+      || die "download of $image failed"
+  fi
+
+  local name="$NAME_FLAG"
+  if [ -z "$name" ]; then
+    local api
+    api="$(printf '%s' "$image" | sed 's/.*android-\([0-9.]*\).*/\1/')"
+    name="$(printf '%s' "${DD_IDS[$di]}" | sed 's/[^A-Za-z0-9._-]/_/g')_API_${api}"
+  fi
+  echo "Creating '$name' (${DD_IDS[$di]}, $image)..."
+  # avdmanager prints harmless "Could not load devices.xml" noise on stderr;
+  # surface stderr only when the create actually fails.
+  local errout
+  errout="$(echo no | ANDROID_HOME="$ANDROID_SDK" ANDROID_SDK_ROOT="$ANDROID_SDK" \
+    "$AVDMANAGER" create avd -n "$name" -k "$image" -d "${DD_IDS[$di]}" 2>&1 >/dev/null)" \
+    || { printf '%s\n' "$errout" >&2; die "avdmanager create failed"; }
+  echo "✓ Created $name — boot it with: sim boot $name"
+}
+
+cmd_create() {
+  local plat="${1:-}"
+  case "$plat" in
+    ios | android) shift ;;
+    "")
+      [ -t 0 ] || die "usage: sim create ios|android <model> <os> [--name <name>]"
+      printf "Platform — (i)OS or (a)ndroid: "
+      local p; read -r p
+      case "$p" in i | ios | iOS) plat=ios ;; a | android) plat=android ;; *) die "unknown platform '$p'" ;; esac
+      ;;
+    *) die "unknown platform '$plat' (expected ios or android)" ;;
+  esac
+  [ "$plat" = "ios" ] && create_ios "$@" || create_android "$@"
+}
+
+do_rm() { # index
+  local i=$1 ans
+  printf "Delete %s permanently? This cannot be undone. [y/N] " "${D_NAME[$i]}"
+  read -r ans
+  case "$ans" in y | Y | yes) ;; *) echo "Cancelled."; return 0 ;; esac
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl shutdown "${D_ID[$i]}" >/dev/null 2>&1
+    xcrun simctl delete "${D_ID[$i]}" || die "simctl delete failed"
+  else
+    if [ -n "${D_SERIAL[$i]}" ]; then
+      "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
+      wait_gone "${D_SERIAL[$i]}"
+    fi
+    if [ -n "$AVDMANAGER" ]; then
+      ANDROID_HOME="$ANDROID_SDK" "$AVDMANAGER" delete avd -n "${D_ID[$i]}" >/dev/null \
+        || die "avdmanager delete failed"
+    else
+      rm -rf "$HOME/.android/avd/${D_ID[$i]}.avd" "$HOME/.android/avd/${D_ID[$i]}.ini"
+    fi
+  fi
+  if [ -f "$FAV_FILE" ] && grep -qxF "${D_ID[$i]}" "$FAV_FILE"; then
+    grep -vxF "${D_ID[$i]}" "$FAV_FILE" > "$FAV_FILE.tmp" && mv "$FAV_FILE.tmp" "$FAV_FILE"
+  fi
+  echo "Deleted ${D_NAME[$i]}."
+}
+
+pick_booted() { # sets SEL to the only booted device, or asks/errors
+  local idxs=() i
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    [ "${D_STATE[$i]}" = "Booted" ] && idxs[${#idxs[@]}]="$i"
+  done
+  case ${#idxs[@]} in
+    0) die "nothing is booted" ;;
+    1) SEL="${idxs[0]}" ;;
+    *)
+      if [ -t 0 ]; then
+        echo "Multiple devices are booted:"
+        choose_from "${idxs[@]}"
+      else
+        for i in "${idxs[@]}"; do printf "  %s  id=%s\n" "$(device_line "$i")" "${D_ID[$i]}" >&2; done
+        die "multiple devices are booted — name one"
+      fi
+      ;;
+  esac
+}
+
+resolve_shot() { # [query...] -> sets SEL; prefers booted devices on ambiguity
+  if [ $# -gt 0 ] && [ -n "$*" ]; then
+    find_matches "$*"
+    if [ ${#MATCHES[@]} -gt 1 ]; then
+      local booted=() i
+      for i in "${MATCHES[@]}"; do
+        [ "${D_STATE[$i]}" = "Booted" ] && booted[${#booted[@]}]="$i"
+      done
+      # Only booted devices can be screenshotted, so a unique booted match
+      # settles the ambiguity; multiple booted matches narrow the choices.
+      [ ${#booted[@]} -ge 1 ] && MATCHES=("${booted[@]}")
+    fi
+    case ${#MATCHES[@]} in
+      0) die "no device matching '$*' (see 'sim ls')" ;;
+      1) SEL="${MATCHES[0]}" ;;
+      *)
+        echo "Multiple booted devices match '$*':"
+        if [ -t 0 ]; then
+          choose_from "${MATCHES[@]}"
+        else
+          local i
+          for i in "${MATCHES[@]}"; do printf "  %s  id=%s\n" "$(device_line "$i")" "${D_ID[$i]}" >&2; done
+          die "ambiguous name — pass the exact id (see 'sim ls --json')"
+        fi
+        ;;
+    esac
+  else
+    pick_booted
+  fi
+}
+
+do_shot() { # index [outpath] — echoes the written path
+  local i=$1 out="${2:-}"
+  [ "${D_STATE[$i]}" = "Booted" ] || die "${D_NAME[$i]} is not booted"
+  if [ -z "$out" ]; then
+    local safe
+    safe="$(printf '%s' "${D_NAME[$i]}" | sed 's/[^A-Za-z0-9._-]/-/g')"
+    out="$HOME/Desktop/sim-$safe-$(date +%Y%m%d-%H%M%S).png"
+  fi
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl io "${D_ID[$i]}" screenshot "$out" >/dev/null 2>&1 || die "screenshot failed"
+  else
+    "$ADB" -s "${D_SERIAL[$i]}" exec-out screencap -p > "$out" || die "screenshot failed"
+  fi
+  echo "$out"
+}
+
 repo_dir() {
   # The CLI is a symlink into the git clone, so resolving our own path
   # finds the repo — that's what makes `sim update` possible.
@@ -449,6 +771,22 @@ main() {
       load_all; resolve "$@"; do_erase "$SEL" ;;
     fav | favorite | star | unfav)
       load_all; resolve "$@"; toggle_fav "$SEL" ;;
+    shot | screenshot)
+      load_all
+      parse_flags "$@"
+      resolve_shot ${POS[@]+"${POS[@]}"}
+      do_shot "$SEL" "$OUT_FLAG" ;;
+    create | new)
+      cmd_create "$@" ;;
+    rm | remove)
+      load_all; resolve "$@"; do_rm "$SEL" ;;
+    models)
+      case "${1:-}" in
+        ios) models_ios "$([ "${2:-}" = "--json" ] && echo 1 || echo 0)" ;;
+        android) models_android "$([ "${2:-}" = "--json" ] && echo 1 || echo 0)" ;;
+        "") models_ios 0; echo; models_android 0 ;;
+        *) die "usage: sim models [ios|android] [--json]" ;;
+      esac ;;
     update | upgrade)
       do_update ;;
     version | -v | --version)
