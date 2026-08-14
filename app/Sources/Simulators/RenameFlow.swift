@@ -10,7 +10,7 @@ enum RenameFlow {
         let alert = NSAlert()
         alert.messageText = "Rename \(device.name)"
         alert.informativeText = device.platform == .android
-            ? "Android emulator names may only contain letters, numbers, '.', '_' and '-'. A running emulator is shut down first."
+            ? "This edits the emulator's display name — spaces are fine, it works while running, and the underlying AVD id stays the same."
             : "The simulator keeps its data and settings."
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = device.name

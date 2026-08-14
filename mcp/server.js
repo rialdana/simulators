@@ -48,7 +48,9 @@ async function resolveDevice(name) {
   const exact = devices.find((d) => d.id === name);
   if (exact) return exact;
   const q = norm(name);
-  const matches = devices.filter((d) => norm(d.name).includes(q));
+  // Match display name or id — Android AVDs can have a pretty display name
+  // ("Pixel 9 Pro XL") on top of their restricted id (Pixel_9_Pro_XL).
+  const matches = devices.filter((d) => norm(d.name).includes(q) || norm(d.id).includes(q));
   if (matches.length === 1) return matches[0];
   if (matches.length === 0) {
     throw new Error(`No device matches "${name}". Use list_devices to see what exists.`);
@@ -67,7 +69,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.5.0" });
+const server = new McpServer({ name: "simulators", version: "1.6.0" });
 
 server.registerTool(
   "list_devices",
@@ -228,7 +230,7 @@ server.registerTool(
   {
     title: "Rename a device",
     description:
-      "Rename a simulator or emulator. Android emulator names may only contain letters, numbers, '.', '_' and '-', and a running emulator is shut down first automatically. Favorites follow the rename.",
+      "Rename a simulator or emulator. Any name works on both platforms (spaces included): iOS renames the simulator directly, Android edits the AVD's display name while its underlying id stays stable. Works on running devices.",
     inputSchema: {
       name: z.string().describe("Current device name or id"),
       new_name: z.string().describe("The new name"),

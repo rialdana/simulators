@@ -146,7 +146,7 @@ sim erase [name]       factory reset a device (asks for confirmation)
 sim shot [name]        screenshot a booted device (to ~/Desktop, or --out <path>)
 sim create ...         create a device (interactive, or ios|android <model> <os>)
 sim rm <name>          delete a simulator/AVD permanently (asks first)
-sim rename <name> <new>  rename a device (favorites follow the rename)
+sim rename <name> <new>  rename a device (spaces fine, works while running)
 sim models [platform]  list creatable models and OS versions (--json)
 sim <name>             shorthand for `sim boot <name>`
 ```
@@ -168,6 +168,13 @@ sim kill all           # shuts down every simulator and emulator
 
 If a name matches more than one device (e.g. the same iPhone across several
 iOS runtimes), you get a numbered picker.
+
+Android devices show their **display name** ("Pixel 9 Pro XL") everywhere,
+like Android Studio does. `sim rename` edits that display name — spaces and
+anything else allowed, even while the emulator runs — while the underlying
+AVD id (`Pixel_9_Pro_XL`, what adb and the emulator use) stays stable and
+visible in `sim ls --json`. Creating a device with a spacey `--name` does
+the same split automatically. Matching accepts either form.
 
 ## What "cold boot" means per platform
 

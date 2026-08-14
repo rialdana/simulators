@@ -60,10 +60,30 @@ enum DeviceLoader {
 
         return avds.map { avd in
             Device(
-                platform: .android, name: avd, id: avd, os: "Android",
+                platform: .android, name: displayName(for: avd), id: avd, os: "Android",
                 booted: running[avd] != nil, serial: running[avd]
             )
         }
+    }
+
+    /// AVDs have an optional free-form display name (avd.ini.displayname in
+    /// config.ini) alongside their restricted-charset id — show the pretty one.
+    private static func displayName(for avd: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let avdHome = ProcessInfo.processInfo.environment["ANDROID_AVD_HOME"] ?? "\(home)/.android/avd"
+        var config = "\(avdHome)/\(avd).avd/config.ini"
+        if !FileManager.default.fileExists(atPath: config),
+           let ini = try? String(contentsOfFile: "\(avdHome)/\(avd).ini", encoding: .utf8),
+           let pathLine = ini.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("path=") }) {
+            config = String(pathLine.dropFirst("path=".count)) + "/config.ini"
+        }
+        guard let text = try? String(contentsOfFile: config, encoding: .utf8) else { return avd }
+        for line in text.split(whereSeparator: \.isNewline) where line.hasPrefix("avd.ini.displayname=") {
+            let value = String(line.dropFirst("avd.ini.displayname=".count))
+                .trimmingCharacters(in: .whitespaces)
+            if !value.isEmpty { return value }
+        }
+        return avd
     }
 
     /// com.apple.CoreSimulator.SimRuntime.iOS-26-2 -> "iOS 26.2"

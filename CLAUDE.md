@@ -30,9 +30,11 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   Missing Android system images download automatically (slow).
 - `sim rm <name|id>` — permanently delete a device. Prompts on stdin;
   destructive, so confirm with the user before piping `y`.
-- `sim rename <name|id> <new name>` — rename a device. Android names are
-  restricted to `[A-Za-z0-9._-]` and a running emulator is shut down
-  first; favorites follow the rename on both platforms.
+- `sim rename <name|id> <new name>` — rename a device; any name works,
+  spaces included, even while running. On Android this edits the AVD's
+  display name (`avd.ini.displayname`); the underlying id — shown in
+  `sim ls --json` and used by adb/emulator — stays stable. Names in
+  listings are display names; matching accepts either form.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 

@@ -15,7 +15,7 @@
 #   sim create ...         create a device: sim create ios|android <model> <os> [--name <n>]
 #                          (interactive when run with no arguments)
 #   sim rm <name|id>       delete a simulator/AVD permanently (asks first)
-#   sim rename <name> <new>  rename a device (Android: shuts it down first)
+#   sim rename <name> <new>  rename a device (Android: edits the display name)
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -81,6 +81,34 @@ load_ios() {
              | .value[] | [$rt, .name, .udid, .state] | @tsv')
 }
 
+# Android has two names: the AVD id (folder name, what emulator/adb use —
+# no spaces allowed) and an optional display name (avd.ini.displayname in
+# config.ini — free-form, what Android Studio shows). We show the display
+# name and operate on the id.
+avd_config_path() { # avd-id -> echoes config.ini path, or nothing
+  local id="$1" avd_home="${ANDROID_AVD_HOME:-$HOME/.android/avd}" cfg
+  cfg="$avd_home/$id.avd/config.ini"
+  if [ ! -f "$cfg" ] && [ -f "$avd_home/$id.ini" ]; then
+    cfg="$(sed -n 's/^path=//p' "$avd_home/$id.ini" | head -1)/config.ini"
+  fi
+  [ -f "$cfg" ] && printf '%s' "$cfg"
+}
+
+avd_display_name() { # avd-id -> echoes display name, falling back to the id
+  local cfg dn=""
+  cfg="$(avd_config_path "$1")"
+  [ -n "$cfg" ] && dn="$(sed -n 's/^avd\.ini\.displayname=//p' "$cfg" | head -1)"
+  printf '%s' "${dn:-$1}"
+}
+
+set_avd_displayname() { # avd-id new-name
+  local cfg
+  cfg="$(avd_config_path "$1")"
+  [ -n "$cfg" ] || die "can't find config.ini for AVD $1"
+  { grep -v '^avd\.ini\.displayname=' "$cfg"; printf 'avd.ini.displayname=%s\n' "$2"; } > "$cfg.tmp" \
+    && mv "$cfg.tmp" "$cfg"
+}
+
 load_android() {
   [ -x "$EMULATOR" ] || return 0
   local serials="" s n avd state serial i
@@ -103,7 +131,7 @@ load_android() {
       i=$((i+1))
     done
     D_PLATFORM[${#D_PLATFORM[@]}]="android"
-    D_NAME[${#D_NAME[@]}]="$avd"
+    D_NAME[${#D_NAME[@]}]="$(avd_display_name "$avd")"
     D_ID[${#D_ID[@]}]="$avd"
     D_STATE[${#D_STATE[@]}]="$state"
     D_OS[${#D_OS[@]}]="Android"
@@ -191,7 +219,12 @@ find_matches() { # query -> MATCHES=(indices)
   done
   q="$(norm "$1")"
   for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    # Match the display name, or the id (they differ for Android AVDs
+    # with a custom display name).
     case "$(norm "${D_NAME[$i]}")" in
+      *"$q"*) MATCHES[${#MATCHES[@]}]="$i"; continue ;;
+    esac
+    case "$(norm "${D_ID[$i]}")" in
       *"$q"*) MATCHES[${#MATCHES[@]}]="$i" ;;
     esac
   done
@@ -544,7 +577,13 @@ create_android() {
       || die "download of $image failed"
   fi
 
-  local name="$NAME_FLAG"
+  # AVD ids can't contain spaces etc. — if the requested name does, use a
+  # sanitized id and set the pretty version as the display name.
+  local name="$NAME_FLAG" display=""
+  if [ -n "$name" ] && ! printf '%s' "$name" | grep -qE '^[A-Za-z0-9._-]+$'; then
+    display="$name"
+    name="$(printf '%s' "$name" | sed 's/[^A-Za-z0-9._-]/_/g')"
+  fi
   if [ -z "$name" ]; then
     local api
     api="$(printf '%s' "$image" | sed 's/.*android-\([0-9.]*\).*/\1/')"
@@ -557,7 +596,8 @@ create_android() {
   errout="$(echo no | ANDROID_HOME="$ANDROID_SDK" ANDROID_SDK_ROOT="$ANDROID_SDK" \
     "$AVDMANAGER" create avd -n "$name" -k "$image" -d "${DD_IDS[$di]}" 2>&1 >/dev/null)" \
     || { printf '%s\n' "$errout" >&2; die "avdmanager create failed"; }
-  echo "✓ Created $name — boot it with: sim boot $name"
+  [ -n "$display" ] && set_avd_displayname "$name" "$display"
+  echo "✓ Created ${display:-$name} — boot it with: sim boot '${display:-$name}'"
 }
 
 cmd_create() {
@@ -606,22 +646,9 @@ do_rename() { # index new-name
   if [ "${D_PLATFORM[$i]}" = "ios" ]; then
     xcrun simctl rename "${D_ID[$i]}" "$new" || die "simctl rename failed"
   else
-    printf '%s' "$new" | grep -qE '^[A-Za-z0-9._-]+$' \
-      || die "Android emulator names may only contain letters, numbers, '.', '_' and '-'"
-    if [ -n "${D_SERIAL[$i]}" ]; then
-      echo "Shutting down ${D_NAME[$i]} first (emulators can't be renamed while running)..."
-      "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
-      wait_gone "${D_SERIAL[$i]}"
-    fi
-    [ -n "$AVDMANAGER" ] || die "avdmanager not found — install it with: brew install --cask android-commandlinetools"
-    local errout
-    errout="$(ANDROID_HOME="$ANDROID_SDK" "$AVDMANAGER" move avd -n "${D_ID[$i]}" -r "$new" 2>&1 >/dev/null)" \
-      || { printf '%s\n' "$errout" >&2; die "avdmanager rename failed"; }
-    # Android favorites key on the AVD name — carry the star over.
-    if [ -f "$FAV_FILE" ] && grep -qxF "${D_ID[$i]}" "$FAV_FILE"; then
-      { grep -vxF "${D_ID[$i]}" "$FAV_FILE"; printf '%s\n' "$new"; } > "$FAV_FILE.tmp" \
-        && mv "$FAV_FILE.tmp" "$FAV_FILE"
-    fi
+    # Edit the display name — free-form, works while the emulator runs, and
+    # the AVD id (what emulator/adb/favorites use) stays stable.
+    set_avd_displayname "${D_ID[$i]}" "$new"
   fi
   echo "Renamed ${D_NAME[$i]} → $new"
 }
