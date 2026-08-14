@@ -21,6 +21,8 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   it is destructive, so confirm with the user before piping `y`.
 - `sim boot favs` / `sim cold favs` / `sim kill favs` — act on every
   favorite. `sim fav <name|id>` toggles a favorite.
+- `sim update` — update the toolset itself (git pull + rebuild what
+  changed). `sim version` shows the installed version.
 
 Names match loosely (case, spaces, underscores, dashes ignored). If a name
 is ambiguous and stdin is not a TTY, `sim` exits non-zero listing the
@@ -30,8 +32,8 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 
 `mcp/server.js` exposes the same operations as typed MCP tools over stdio:
 `list_devices`, `boot_device`, `cold_boot_device`, `shutdown_device`,
-`erase_device` (destructive), `boot_favorites`, `shutdown_all`. Register in
-Claude Code with:
+`erase_device` (destructive), `boot_favorites`, `shutdown_all`,
+`self_update`. Register in Claude Code with:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js

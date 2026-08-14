@@ -65,7 +65,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.0.0" });
+const server = new McpServer({ name: "simulators", version: "1.1.0" });
 
 server.registerTool(
   "list_devices",
@@ -155,6 +155,16 @@ server.registerTool(
     description: "Shut down every running iOS simulator and Android emulator.",
   },
   async () => text((await runSim(["kill", "all"], { timeoutMs: 180_000 })) || "Everything shut down.")
+);
+
+server.registerTool(
+  "self_update",
+  {
+    title: "Update the simulator tools",
+    description:
+      "Update this toolset itself (the sim CLI, the Simulators menu bar app, and this MCP server) to the latest version from GitHub. Pulls the repo and rebuilds only what changed; the updated MCP server code takes effect in the next session. Use when the user asks to update their simulator tools.",
+  },
+  async () => text(await runSim(["update"], { timeoutMs: 600_000 }))
 );
 
 await server.connect(new StdioServerTransport());

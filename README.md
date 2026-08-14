@@ -27,6 +27,24 @@ in the menu bar. Run `./install.sh` again anytime to update both.
 Everything compiles locally in a few seconds, so there is no Gatekeeper
 friction and nothing to trust beyond the source you can read.
 
+## Updating
+
+```
+sim update
+```
+
+One command, run from anywhere. It pulls the latest version of the clone
+and rebuilds only what changed: the CLI and MCP server run straight out of
+the repo (so the pull alone updates them), the app is recompiled and
+relaunched only when `app/` changed, and MCP dependencies are reinstalled
+only when they moved. `sim version` shows what you're on, and
+`git pull && ./install.sh` is the manual equivalent.
+
+Releases are tagged (`vX.Y.Z`) with notes on the
+[Releases page](https://github.com/rialdana/simulators/releases). You can
+also just ask your AI agent to update — the MCP server exposes a
+`self_update` tool.
+
 ### Sharing the built app instead
 
 Zipping `/Applications/Simulators.app` and sending it also works, but the
@@ -77,9 +95,9 @@ use whichever fits:
 - **`mcp/server.js`** — an MCP (Model Context Protocol) stdio server
   exposing typed tools: `list_devices`, `boot_device`, `cold_boot_device`,
   `shutdown_device`, `erase_device` (flagged destructive), `boot_favorites`,
-  and `shutdown_all`. It shells out to `sim`, so all three layers share one
-  implementation. Works with any MCP client (Claude Code, Claude Desktop,
-  Cursor, ...).
+  `shutdown_all`, and `self_update`. It shells out to `sim`, so all three
+  layers share one implementation. Works with any MCP client (Claude Code,
+  Claude Desktop, Cursor, ...).
 
 Set it up:
 

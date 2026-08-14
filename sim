@@ -11,6 +11,8 @@
 #   sim fav [name]         toggle a favorite (marked ★, listed first)
 #   sim boot favs          boot every favorite (also works: cold favs, kill favs)
 #   sim ls --json          machine-readable device list (for scripts and agents)
+#   sim update             pull the latest version and rebuild what changed
+#   sim version            show the installed version
 #   sim <name>             shorthand for `sim boot <name>`
 #
 # Names match loosely (case-insensitive, spaces/underscores/dashes ignored):
@@ -343,6 +345,54 @@ toggle_fav() { # index
   fi
 }
 
+repo_dir() {
+  # The CLI is a symlink into the git clone, so resolving our own path
+  # finds the repo — that's what makes `sim update` possible.
+  local script
+  script="$(readlink -f "$0")" || die "can't resolve script path"
+  dirname "$script"
+}
+
+do_version() {
+  git -C "$(repo_dir)" describe --tags --always 2>/dev/null \
+    || echo "unknown (not a git checkout)"
+}
+
+do_update() {
+  local repo old new was_running=0
+  repo="$(repo_dir)"
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "$repo is not a git checkout — reinstall from https://github.com/rialdana/simulators"
+  old="$(git -C "$repo" rev-parse HEAD)"
+  echo "Updating $repo..."
+  git -C "$repo" pull --ff-only >/dev/null || die "git pull failed — resolve local changes in $repo and retry"
+  new="$(git -C "$repo" rev-parse HEAD)"
+  if [ "$old" = "$new" ]; then
+    echo "Already up to date ($(do_version))."
+    return 0
+  fi
+  echo
+  echo "Changes:"
+  git -C "$repo" log --oneline "$old..$new" | sed 's/^/  /'
+  echo
+  # The CLI and MCP server run straight out of the clone, so they're already
+  # updated by the pull. Rebuild the rest only if it changed.
+  if git -C "$repo" diff --name-only "$old" "$new" -- mcp/package.json | grep -q .; then
+    echo "Updating MCP server dependencies..."
+    (cd "$repo/mcp" && npm install --silent)
+  fi
+  if git -C "$repo" diff --name-only "$old" "$new" -- app/ | grep -q .; then
+    pgrep -xq Simulators && was_running=1
+    "$repo/app/build.sh"
+    if [ "$was_running" -eq 1 ]; then
+      open /Applications/Simulators.app 2>/dev/null || open "$HOME/Applications/Simulators.app"
+    fi
+  else
+    echo "App unchanged — no rebuild needed."
+  fi
+  echo "✓ Updated to $(do_version)."
+}
+
 # -------------------------------------------------------------- interactive --
 interactive() {
   print_devices
@@ -396,6 +446,10 @@ main() {
       load_all; resolve "$@"; do_erase "$SEL" ;;
     fav | favorite | star | unfav)
       load_all; resolve "$@"; toggle_fav "$SEL" ;;
+    update | upgrade)
+      do_update ;;
+    version | -v | --version)
+      do_version ;;
     -h | --help | help)
       usage ;;
     *)
