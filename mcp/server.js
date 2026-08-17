@@ -76,7 +76,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.7.0" });
+const server = new McpServer({ name: "simulators", version: "1.8.0" });
 
 server.registerTool(
   "list_devices",
@@ -283,6 +283,150 @@ server.registerTool(
       args.push("--device", d.id);
     }
     return text(await runSim(args, { timeoutMs: 180_000 }));
+  }
+);
+
+// Shared inputs for per-app tools. Ambiguous app hints fail with the
+// candidate list — relay the choices to the user, then retry with the id.
+const appArgs = {
+  app: z.string().describe("App name hint, or exact bundle id (iOS) / package id (Android)"),
+  device: z.string().optional().describe("Device name or id; omit if only one device is booted"),
+};
+
+async function appCommand(cmd, app, device, extra = {}) {
+  const args = [cmd, app];
+  if (device) {
+    const d = await resolveDevice(device, { preferBooted: true });
+    args.push("--device", d.id);
+  }
+  return runSim(args, extra);
+}
+
+server.registerTool(
+  "list_apps",
+  {
+    title: "List installed apps",
+    description:
+      "List the user-installed apps on a booted device as JSON ({id, label}). Use it to see what's installed or to resolve an app hint before other per-app tools.",
+    inputSchema: {
+      device: z.string().optional().describe("Device name or id; omit if only one device is booted"),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ device }) => {
+    const args = ["apps", "--json"];
+    if (device) {
+      const d = await resolveDevice(device, { preferBooted: true });
+      args.push("--device", d.id);
+    }
+    return text(await runSim(args));
+  }
+);
+
+server.registerTool(
+  "launch_app",
+  {
+    title: "Launch an app",
+    description: "Launch an app on a booted device. Fails if it's already running on iOS — use relaunch_app to restart.",
+    inputSchema: appArgs,
+  },
+  async ({ app, device }) => text(await appCommand("launch", app, device))
+);
+
+server.registerTool(
+  "quit_app",
+  {
+    title: "Stop an app",
+    description: "Stop (force-quit) a running app on a booted device.",
+    inputSchema: appArgs,
+  },
+  async ({ app, device }) => text(await appCommand("quit", app, device))
+);
+
+server.registerTool(
+  "relaunch_app",
+  {
+    title: "Relaunch (restart) an app",
+    description:
+      "Force-stop and relaunch an app on a booted device — e.g. to restart a wedged React Native app without touching Metro or rebooting the device.",
+    inputSchema: appArgs,
+  },
+  async ({ app, device }) => text(await appCommand("relaunch", app, device))
+);
+
+server.registerTool(
+  "uninstall_app",
+  {
+    title: "Uninstall an app",
+    description:
+      "Remove an app and all of its data from a booted device. Destructive and not undoable — confirm with the user first.",
+    inputSchema: appArgs,
+    annotations: { destructiveHint: true },
+  },
+  async ({ app, device }) => text(await appCommand("uninstall", app, device, { input: "y\n" }))
+);
+
+server.registerTool(
+  "install_app",
+  {
+    title: "Install an app",
+    description:
+      "Install an app package onto a booted device: a .app bundle (iOS simulator build) or a .apk (Android). The platform is inferred from the file extension; device is only needed when several devices of that platform are booted.",
+    inputSchema: {
+      path: z.string().describe("Absolute path to a .app bundle or .apk"),
+      device: z.string().optional().describe("Device name or id"),
+    },
+  },
+  async ({ path: pkgPath, device }) => {
+    const args = ["install", pkgPath];
+    if (device) {
+      const d = await resolveDevice(device, { preferBooted: true });
+      args.push("--device", d.id);
+    }
+    return text(await runSim(args, { timeoutMs: 300_000 }));
+  }
+);
+
+server.registerTool(
+  "open_url",
+  {
+    title: "Open a URL / deep link",
+    description:
+      "Open a URL or deep link (https://…, myapp://…) on booted devices. With no device given it opens on EVERY booted device — handy for testing a deep link on iOS and Android at once.",
+    inputSchema: {
+      url: z.string().describe("The URL or deep link to open"),
+      device: z.string().optional().describe("Device name or id; omit to open on all booted devices"),
+    },
+  },
+  async ({ url, device }) => {
+    const args = ["url", url];
+    if (device) {
+      const d = await resolveDevice(device, { preferBooted: true });
+      args.push("--device", d.id);
+    }
+    return text(await runSim(args));
+  }
+);
+
+server.registerTool(
+  "set_app_permission",
+  {
+    title: "Set an app permission",
+    description:
+      "Grant, revoke, or reset a permission for an app on a booted device. Friendly names map per platform: camera, microphone, location, location-always, photos, contacts, calendar, notifications (Android), motion/reminders/media-library/siri/all (iOS). Raw android.permission.* or simctl service names pass through. On Android, reset behaves as revoke, and the permission must be declared in the app's manifest.",
+    inputSchema: {
+      action: z.enum(["grant", "revoke", "reset"]),
+      permission: z.string().describe("Friendly name (e.g. 'camera') or raw platform permission"),
+      ...appArgs,
+    },
+  },
+  async ({ action, permission, app, device }) => {
+    const args = ["perm", action, permission, app];
+    if (device) {
+      const d = await resolveDevice(device, { preferBooted: true });
+      args.push("--device", d.id);
+    }
+    return text(await runSim(args));
   }
 );
 

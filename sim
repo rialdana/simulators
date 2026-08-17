@@ -19,6 +19,12 @@
 #   sim clear <app>        reset an app to fresh-install state (data + cache);
 #                          app is a name hint or bundle/package id; add
 #                          --device <name> when several devices are booted
+#   sim apps               list user apps on a booted device (--json)
+#   sim launch <app>       launch an app (also: sim quit, sim relaunch)
+#   sim uninstall <app>    remove an app entirely (asks first)
+#   sim install <path>     install a .app bundle or .apk on a booted device
+#   sim url <link>         open a URL/deep link on all booted devices
+#   sim perm <grant|revoke|reset> <permission> <app>   e.g. perm grant camera allball
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -741,9 +747,12 @@ list_apps() { # device-index -> lines of "id<TAB>label" (user-installed apps)
   fi
 }
 
-do_clear() { # device-index app-hint
+# Resolve an app hint on a booted device: exact bundle/package id wins,
+# otherwise loose match on id and label. Sets APP_ID and APP_LABEL; on an
+# ambiguous hint, asks (tty) or exits non-zero listing candidates.
+resolve_app() { # device-index app-hint
   local i=$1 hint="$2"
-  [ "${D_STATE[$i]}" = "Booted" ] || die "${D_NAME[$i]} must be booted to clear app data"
+  [ "${D_STATE[$i]}" = "Booted" ] || die "${D_NAME[$i]} must be booted for app operations"
   APP_IDS=(); APP_LABELS=()
   local id label
   while IFS=$'\t' read -r id label; do
@@ -753,7 +762,6 @@ do_clear() { # device-index app-hint
   done < <(list_apps "$i")
   [ ${#APP_IDS[@]} -gt 0 ] || die "no user-installed apps found on ${D_NAME[$i]}"
 
-  # Exact id wins; otherwise loose match on id and label.
   local j nq sel="" matches=()
   for ((j = 0; j < ${#APP_IDS[@]}; j++)); do
     [ "$hint" = "${APP_IDS[$j]}" ] && { sel="$j"; break; }
@@ -783,17 +791,23 @@ do_clear() { # device-index app-hint
         done
         [ -t 0 ] || die "ambiguous app — pass the exact bundle/package id"
         local c
-        printf "Clear which one? (1-%d, q to quit): " "${#matches[@]}" >&2
+        printf "Which one? (1-%d, q to cancel): " "${#matches[@]}" >&2
         read -r c
-        case "$c" in q | Q | "") echo "Cancelled."; return 0 ;; esac
+        case "$c" in q | Q | "") echo "Cancelled."; exit 0 ;; esac
         printf '%s' "$c" | grep -qE '^[0-9]+$' || die "not a number: $c"
         { [ "$c" -ge 1 ] && [ "$c" -le ${#matches[@]} ]; } || die "out of range: $c"
         sel="${matches[$((c - 1))]}"
         ;;
     esac
   fi
+  APP_ID="${APP_IDS[$sel]}"
+  APP_LABEL="${APP_LABELS[$sel]}"
+}
 
-  local app_id="${APP_IDS[$sel]}" app_label="${APP_LABELS[$sel]}"
+do_clear() { # device-index app-hint
+  local i=$1
+  resolve_app "$i" "$2"
+  local app_id="$APP_ID" app_label="$APP_LABEL"
   echo "Clearing data & cache of $app_label ($app_id) on ${D_NAME[$i]}..."
   if [ "${D_PLATFORM[$i]}" = "ios" ]; then
     # iOS has no pm clear: reinstalling the same .app is the reliable way
@@ -815,6 +829,193 @@ do_clear() { # device-index app-hint
     [ "$out" = "Success" ] || die "pm clear failed: $out"
   fi
   echo "✓ $app_label is back to a fresh-install state."
+}
+
+do_launch() { # device-index (APP_ID/APP_LABEL set by resolve_app)
+  local i=$1 out
+  echo "Launching $APP_LABEL on ${D_NAME[$i]}..."
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    out="$(xcrun simctl launch "${D_ID[$i]}" "$APP_ID" 2>&1)" || {
+      case "$out" in
+        *"is already"* | *FBSOpenApplication*) die "launch failed: $out — try 'sim relaunch'" ;;
+        *) die "launch failed: $out" ;;
+      esac
+    }
+    open -a Simulator
+  else
+    out="$("$ADB" -s "${D_SERIAL[$i]}" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 2>/dev/null | tr -d '\r')"
+    printf '%s' "$out" | grep -q "Events injected: 1" \
+      || die "couldn't launch $APP_ID — does it have a launcher activity?"
+  fi
+  echo "✓ $APP_LABEL is running."
+}
+
+do_quit() { # device-index
+  local i=$1
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    if xcrun simctl terminate "${D_ID[$i]}" "$APP_ID" >/dev/null 2>&1; then
+      echo "✓ $APP_LABEL stopped."
+    else
+      echo "$APP_LABEL wasn't running."
+    fi
+  else
+    "$ADB" -s "${D_SERIAL[$i]}" shell am force-stop "$APP_ID" >/dev/null 2>&1
+    echo "✓ $APP_LABEL stopped."
+  fi
+}
+
+do_relaunch() { # device-index
+  local i=$1
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl terminate "${D_ID[$i]}" "$APP_ID" >/dev/null 2>&1
+  else
+    "$ADB" -s "${D_SERIAL[$i]}" shell am force-stop "$APP_ID" >/dev/null 2>&1
+  fi
+  sleep 1
+  do_launch "$i"
+}
+
+do_uninstall() { # device-index
+  local i=$1 ans out
+  printf "Uninstall %s (%s) from %s? [y/N] " "$APP_LABEL" "$APP_ID" "${D_NAME[$i]}"
+  read -r ans
+  case "$ans" in y | Y | yes) ;; *) echo "Cancelled."; return 0 ;; esac
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    xcrun simctl terminate "${D_ID[$i]}" "$APP_ID" >/dev/null 2>&1
+    xcrun simctl uninstall "${D_ID[$i]}" "$APP_ID" || die "uninstall failed"
+  else
+    out="$("$ADB" -s "${D_SERIAL[$i]}" uninstall "$APP_ID" 2>&1 | tr -d '\r')"
+    printf '%s' "$out" | grep -q "Success" || die "uninstall failed: $out"
+  fi
+  echo "✓ Uninstalled $APP_LABEL from ${D_NAME[$i]}."
+}
+
+pick_booted_plat() { # platform -> sets SEL among booted devices of that platform
+  local plat=$1 idxs=() i
+  for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+    [ "${D_STATE[$i]}" = "Booted" ] && [ "${D_PLATFORM[$i]}" = "$plat" ] && idxs[${#idxs[@]}]="$i"
+  done
+  case ${#idxs[@]} in
+    0) die "no booted $plat device" ;;
+    1) SEL="${idxs[0]}" ;;
+    *)
+      if [ -t 0 ]; then
+        echo "Multiple booted $plat devices:"
+        choose_from "${idxs[@]}"
+      else
+        for i in "${idxs[@]}"; do printf "  %s  id=%s\n" "$(device_line "$i")" "${D_ID[$i]}" >&2; done
+        die "multiple booted $plat devices — use --device"
+      fi
+      ;;
+  esac
+}
+
+cmd_install() {
+  parse_flags "$@"
+  [ ${#POS[@]} -ge 1 ] || die "usage: sim install <path/to/App.app | .apk> [--device <device>]"
+  local path="${POS[0]}" plat out
+  case "$path" in
+    *.apk) plat=android; [ -f "$path" ] || die "no such file: $path" ;;
+    *.app | *.app/) plat=ios; [ -d "$path" ] || die "no such app bundle: $path" ;;
+    *) die "expected a .app bundle (iOS) or .apk (Android)" ;;
+  esac
+  if [ -n "$DEVICE_FLAG" ]; then
+    resolve_shot "$DEVICE_FLAG"
+    [ "${D_PLATFORM[$SEL]}" = "$plat" ] || die "${D_NAME[$SEL]} is ${D_PLATFORM[$SEL]} — this package installs on $plat"
+    [ "${D_STATE[$SEL]}" = "Booted" ] || die "${D_NAME[$SEL]} is not booted"
+  else
+    pick_booted_plat "$plat"
+  fi
+  echo "Installing $(basename "$path") on ${D_NAME[$SEL]}..."
+  if [ "$plat" = "ios" ]; then
+    xcrun simctl install "${D_ID[$SEL]}" "$path" || die "install failed"
+  else
+    out="$("$ADB" -s "${D_SERIAL[$SEL]}" install -r "$path" 2>&1 | tr -d '\r')"
+    printf '%s' "$out" | grep -q "Success" || die "install failed: $out"
+  fi
+  echo "✓ Installed on ${D_NAME[$SEL]}."
+}
+
+cmd_url() {
+  parse_flags "$@"
+  [ ${#POS[@]} -ge 1 ] || die "usage: sim url <link> [--device <device>]"
+  local url="${POS[0]}" targets=() i out
+  if [ -n "$DEVICE_FLAG" ]; then
+    resolve_shot "$DEVICE_FLAG"
+    [ "${D_STATE[$SEL]}" = "Booted" ] || die "${D_NAME[$SEL]} is not booted"
+    targets=("$SEL")
+  else
+    for ((i = 0; i < ${#D_NAME[@]}; i++)); do
+      [ "${D_STATE[$i]}" = "Booted" ] && targets[${#targets[@]}]="$i"
+    done
+    [ ${#targets[@]} -gt 0 ] || die "nothing is booted"
+  fi
+  for i in "${targets[@]}"; do
+    if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+      xcrun simctl openurl "${D_ID[$i]}" "$url" || die "couldn't open URL on ${D_NAME[$i]}"
+    else
+      # The inner quotes survive adb's argument join, so ? and & in the URL
+      # don't get eaten by the on-device shell.
+      out="$("$ADB" -s "${D_SERIAL[$i]}" shell am start -a android.intent.action.VIEW -d "'$url'" 2>&1 | tr -d '\r')"
+      case "$out" in *Error*) die "couldn't open URL on ${D_NAME[$i]}: $out" ;; esac
+    fi
+    echo "✓ Opened on ${D_NAME[$i]}"
+  done
+}
+
+map_perm_ios() { # friendly name -> simctl privacy service (unknowns pass through)
+  case "$1" in
+    camera) echo camera ;;
+    microphone | mic) echo microphone ;;
+    location) echo location ;;
+    location-always) echo location-always ;;
+    photos) echo photos ;;
+    contacts) echo contacts ;;
+    calendar) echo calendar ;;
+    reminders) echo reminders ;;
+    motion) echo motion ;;
+    media-library) echo media-library ;;
+    siri) echo siri ;;
+    all) echo all ;;
+    *) echo "$1" ;;
+  esac
+}
+
+map_perm_android() { # friendly name -> android permission(s) (unknowns pass through)
+  case "$1" in
+    camera) echo android.permission.CAMERA ;;
+    microphone | mic) echo android.permission.RECORD_AUDIO ;;
+    location) echo "android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION" ;;
+    photos) echo "android.permission.READ_MEDIA_IMAGES android.permission.READ_MEDIA_VIDEO" ;;
+    contacts) echo "android.permission.READ_CONTACTS android.permission.WRITE_CONTACTS" ;;
+    calendar) echo "android.permission.READ_CALENDAR android.permission.WRITE_CALENDAR" ;;
+    notifications) echo android.permission.POST_NOTIFICATIONS ;;
+    *) echo "$1" ;;
+  esac
+}
+
+cmd_perm() {
+  parse_flags "$@"
+  [ ${#POS[@]} -ge 3 ] || die "usage: sim perm grant|revoke|reset <permission> <app> [--device <device>]
+permissions: camera microphone location location-always photos contacts calendar
+notifications motion reminders media-library siri all — or a raw
+android.permission.* / simctl service name"
+  local action="${POS[0]}" perm="${POS[1]}" hint p out
+  case "$action" in grant | revoke | reset) ;; *) die "action must be grant, revoke or reset" ;; esac
+  hint="${POS[*]:2}"
+  if [ -n "$DEVICE_FLAG" ]; then resolve_shot "$DEVICE_FLAG"; else pick_booted; fi
+  resolve_app "$SEL" "$hint"
+  if [ "${D_PLATFORM[$SEL]}" = "ios" ]; then
+    xcrun simctl privacy "${D_ID[$SEL]}" "$action" "$(map_perm_ios "$perm")" "$APP_ID" \
+      || die "simctl privacy failed"
+  else
+    [ "$action" = "reset" ] && action=revoke  # Android's closest equivalent
+    for p in $(map_perm_android "$perm"); do
+      out="$("$ADB" -s "${D_SERIAL[$SEL]}" shell pm "$action" "$APP_ID" "$p" 2>&1 | tr -d '\r')"
+      [ -z "$out" ] || die "pm $action $p failed: $out (is it declared in the app's manifest?)"
+    done
+  fi
+  echo "✓ $action $perm for $APP_LABEL — done."
 }
 
 repo_dir() {
@@ -898,7 +1099,7 @@ main() {
     ls | list | status)
       load_all
       if [ "${1:-}" = "--json" ]; then print_json; else print_devices; fi ;;
-    boot | start | launch)
+    boot | start)
       load_all
       case "${1:-}" in
         favs | favorites) do_favs do_boot ;;
@@ -936,6 +1137,41 @@ main() {
       [ ${#POS[@]} -ge 1 ] || die "usage: sim clear <app name or id> [--device <device>]"
       if [ -n "$DEVICE_FLAG" ]; then resolve_shot "$DEVICE_FLAG"; else pick_booted; fi
       do_clear "$SEL" "${POS[*]}" ;;
+    apps)
+      load_all
+      parse_flags "$@"
+      if [ -n "$DEVICE_FLAG" ]; then resolve_shot "$DEVICE_FLAG"; else pick_booted; fi
+      [ "${D_STATE[$SEL]}" = "Booted" ] || die "${D_NAME[$SEL]} is not booted"
+      if [ "${POS[0]:-}" = "--json" ]; then
+        list_apps "$SEL" | jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {id: .[0], label: .[1]})'
+      else
+        echo "${BOLD}Apps on ${D_NAME[$SEL]}${RESET}"
+        list_apps "$SEL" | while IFS=$'\t' read -r id label; do
+          [ -n "$id" ] && printf '  %s (%s)\n' "$label" "$id"
+        done
+      fi ;;
+    launch | quit | relaunch | uninstall)
+      APP_CMD="$cmd"
+      load_all
+      parse_flags "$@"
+      [ ${#POS[@]} -ge 1 ] || die "usage: sim $APP_CMD <app name or id> [--device <device>]"
+      if [ -n "$DEVICE_FLAG" ]; then resolve_shot "$DEVICE_FLAG"; else pick_booted; fi
+      resolve_app "$SEL" "${POS[*]}"
+      case "$APP_CMD" in
+        launch) do_launch "$SEL" ;;
+        quit) do_quit "$SEL" ;;
+        relaunch) do_relaunch "$SEL" ;;
+        uninstall) do_uninstall "$SEL" ;;
+      esac ;;
+    install)
+      load_all
+      cmd_install "$@" ;;
+    url | openurl)
+      load_all
+      cmd_url "$@" ;;
+    perm | permission | privacy)
+      load_all
+      cmd_perm "$@" ;;
     rename)
       load_all
       [ $# -ge 2 ] || die "usage: sim rename <device> <new name>"

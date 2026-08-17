@@ -109,7 +109,9 @@ use whichever fits:
   `shutdown_device`, `erase_device` and `delete_device` (flagged
   destructive), `boot_favorites`, `shutdown_all`, `screenshot_device`,
   `list_device_models`, `create_device`, `rename_device`,
-  `clear_app_data` (destructive), and `self_update`. It shells out
+  `clear_app_data` and `uninstall_app` (destructive), `list_apps`,
+  `launch_app`, `quit_app`, `relaunch_app`, `install_app`, `open_url`,
+  `set_app_permission`, and `self_update`. It shells out
   to `sim`, so all layers share one implementation. Works with any MCP
   client (Claude Code, Claude Desktop, Cursor, ...).
 
@@ -148,6 +150,12 @@ sim create ...         create a device (interactive, or ios|android <model> <os>
 sim rm <name>          delete a simulator/AVD permanently (asks first)
 sim rename <name> <new>  rename a device (spaces fine, works while running)
 sim clear <app>        reset one app to fresh-install state (data + cache)
+sim apps               list user apps on a booted device (--json)
+sim launch <app>       launch an app (also: sim quit, sim relaunch)
+sim uninstall <app>    remove an app entirely (asks first)
+sim install <path>     install a .app bundle or .apk
+sim url <link>         open a URL/deep link on all booted devices
+sim perm <action> <permission> <app>   grant/revoke/reset a permission
 sim models [platform]  list creatable models and OS versions (--json)
 sim <name>             shorthand for `sim boot <name>`
 ```
@@ -170,12 +178,23 @@ sim kill all           # shuts down every simulator and emulator
 If a name matches more than one device (e.g. the same iPhone across several
 iOS runtimes), you get a numbered picker.
 
-`sim clear` resets a single app instead of the whole device: pass an app
-name hint or an exact bundle/package id (`sim clear allball`). Android uses
-`pm clear`; iOS reinstalls the same .app in place, which yields a true
-fresh-install state. If several apps match the hint you're shown the
-candidates and asked to choose; when several devices are booted, add
-`--device <name>`.
+Per-app actions all share the same shape: pass an app name hint or an exact
+bundle/package id (`sim relaunch allball`). If several apps match you're
+shown the candidates and asked to choose; when several devices are booted,
+add `--device <name>`.
+
+- `sim clear` resets a single app instead of the whole device — Android
+  uses `pm clear`; iOS reinstalls the same .app in place, a true
+  fresh-install state.
+- `sim relaunch` force-stops and relaunches — the fix for a wedged RN app
+  when Metro itself is fine. `sim launch` and `sim quit` are the halves.
+- `sim uninstall` / `sim install <path>` remove an app or drop a
+  `.app`/`.apk` build onto a device (platform inferred from the extension).
+- `sim url myapp://profile/123` opens a deep link on **every** booted
+  device at once — iOS and Android side by side.
+- `sim perm grant camera allball` grants/revokes/resets permissions, with
+  friendly names (camera, microphone, location, photos, contacts, calendar,
+  notifications…) mapped to each platform's real permission ids.
 
 Android devices show their **display name** ("Pixel 9 Pro XL") everywhere,
 like Android Studio does. `sim rename` edits that display name — spaces and

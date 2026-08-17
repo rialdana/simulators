@@ -41,6 +41,22 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   user first. Ambiguous hints exit non-zero listing candidates; ask the
   user which one, then retry with the exact id. `--device` is only needed
   when several devices are booted.
+- `sim apps [--json]` — list user-installed apps on a booted device.
+- `sim launch <app>` / `sim quit <app>` / `sim relaunch <app>` — start,
+  force-stop, or restart an app. `relaunch` is the fix for a wedged RN app
+  when Metro itself is fine. Same hint matching and `--device` rules as
+  `clear`.
+- `sim uninstall <app>` — remove an app entirely. Prompts on stdin;
+  destructive, confirm with the user before piping `y`.
+- `sim install <path>` — install a `.app` bundle (iOS) or `.apk` (Android)
+  on a booted device; platform inferred from the extension.
+- `sim url <link>` — open a URL/deep link. No `--device` → opens on every
+  booted device (both platforms at once).
+- `sim perm grant|revoke|reset <permission> <app>` — set app permissions.
+  Friendly names (camera, microphone, location, photos, contacts,
+  calendar, notifications, …) map per platform; raw `android.permission.*`
+  or simctl service names pass through. Android reset = revoke, and the
+  permission must be in the app's manifest.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -55,8 +71,10 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 `erase_device` (destructive), `boot_favorites`, `shutdown_all`,
 `screenshot_device` (returns the image — use it to see the device screen),
 `list_device_models`, `create_device`, `rename_device`, `delete_device`
-(destructive), `clear_app_data` (destructive), `self_update`. Register in
-Claude Code with:
+(destructive), `clear_app_data` (destructive), `list_apps`, `launch_app`,
+`quit_app`, `relaunch_app`, `uninstall_app` (destructive), `install_app`,
+`open_url`, `set_app_permission`, `self_update`. Register in Claude Code
+with:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js
