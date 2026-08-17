@@ -20,9 +20,14 @@ cd simulators
 ./install.sh
 ```
 
-That links the `sim` CLI onto your PATH, builds Simulators.app from source,
-installs it to `/Applications`, and launches it. Look for the iPhone icon
-in the menu bar. Run `./install.sh` again anytime to update both.
+That links the `sim` CLI onto your PATH, registers the MCP server with
+Claude Code, builds Simulators.app from source, installs it to
+`/Applications`, and launches it. Look for the iPhone icon in the menu bar.
+Run `./install.sh` again anytime to update everything.
+
+MCP setup needs `node` and the `claude` CLI; if either is missing the
+installer prints what to run later and carries on. `SIM_NO_MCP=1
+./install.sh` skips it entirely.
 
 Everything compiles locally in a few seconds, so there is no Gatekeeper
 friction and nothing to trust beyond the source you can read.
@@ -37,7 +42,9 @@ One command, run from anywhere. It pulls the latest version of the clone
 and rebuilds only what changed: the CLI and MCP server run straight out of
 the repo (so the pull alone updates them), the app is recompiled and
 relaunched only when `app/` changed, and MCP dependencies are reinstalled
-only when they moved. `sim version` shows what you're on, and
+when they moved. Updating also repairs an MCP registration left pointing at
+an old checkout — but if you removed the server from Claude Code yourself,
+it stays removed. `sim version` shows what you're on, and
 `git pull && ./install.sh` is the manual equivalent.
 
 The app has the same mechanism built in: **Check for Updates…** in the menu
@@ -121,12 +128,18 @@ simulator screen — "boot my favorites, screenshot both, and tell me if the
 layout is broken on Android" works end to end. And `create_device` means
 "create a Pixel 9 with Android 36 and boot it" needs no Android Studio.
 
-Set it up:
+`./install.sh` sets this up for you — it installs the server's dependencies
+and registers it with Claude Code. Restart Claude Code afterwards and the
+tools appear (`/mcp` lists them). To (re)do it on its own:
 
 ```
-cd mcp && npm install
-claude mcp add --scope user simulators -- node "$PWD/server.js"
+sim mcp
 ```
+
+It's idempotent: it installs deps if they're missing, registers the server
+if no client knows it, and re-points a registration that's aimed at a moved
+or older checkout. `sim doctor` reports both halves, so a server that was
+never registered shows up as a warning instead of looking healthy.
 
 For other MCP clients, configure a stdio server with command `node` and
 args `["<repo>/mcp/server.js"]`.

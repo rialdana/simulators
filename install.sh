@@ -22,6 +22,14 @@ else
   echo "! couldn't write to $BIN — link it yourself:  ln -s \"$PWD/sim\" <somewhere on your PATH>"
 fi
 
+# --- MCP server --------------------------------------------------------------
+# Installing the app never taught an MCP client about the server, so this used
+# to be two commands from the README that most people never ran.
+# SIM_NO_MCP=1 skips it.
+if [ -z "${SIM_NO_MCP:-}" ]; then
+  ./sim mcp || echo "! MCP setup incomplete — fix the above, then run: sim mcp"
+fi
+
 # --- Simulators.app ------------------------------------------------------------
 app/build.sh
 

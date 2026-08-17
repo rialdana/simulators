@@ -63,8 +63,12 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   captures the next N seconds instead — relaunch the app, then read what
   happened. Android needs the app running.
 - `sim doctor` — environment checks (Xcode, Android SDK, adb, avdmanager,
-  Java, CLI/app/MCP install state) with fix hints; non-zero exit when
-  something required is broken.
+  Java, CLI/app install state, MCP deps *and* whether the MCP is actually
+  registered with Claude Code) with fix hints; non-zero exit when something
+  required is broken.
+- `sim mcp` — install the MCP server's deps and register it with Claude
+  Code. `install.sh` runs this, and `sim update` repairs it; run it by hand
+  if the MCP tools never showed up. Idempotent.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -82,8 +86,9 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 (destructive), `clear_app_data` (destructive), `list_apps`, `launch_app`,
 `quit_app`, `relaunch_app`, `uninstall_app` (destructive), `install_app`,
 `open_url`, `set_app_permission`, `app_logs` (use it to read native
-crash/module logs yourself), `doctor`, `self_update`. Register in Claude
-Code with:
+crash/module logs yourself), `doctor`, `self_update`. `install.sh` registers
+it with Claude Code automatically; `sim mcp` does the same on its own, and
+the manual equivalent is:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js

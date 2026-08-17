@@ -28,6 +28,7 @@
 #   sim logs <app>         app's native logs: stream live (tty), dump recent
 #                          (piped), or capture the next N secs with --for <n>
 #   sim doctor             check the environment and report what's missing
+#   sim mcp                install + register the MCP server (install does this)
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -1149,14 +1150,30 @@ cmd_doctor() {
   else
     d_warn "Simulators.app not installed — run install.sh"
   fi
+  local want reg
   if command -v node >/dev/null 2>&1; then
     if [ -n "$repo" ] && [ -d "$repo/mcp/node_modules" ]; then
-      d_ok "MCP server ready (node $(node --version 2>/dev/null))"
+      d_ok "MCP dependencies (node $(node --version 2>/dev/null))"
     else
-      d_warn "MCP server deps not installed — cd '$repo/mcp' && npm install"
+      d_warn "MCP dependencies not installed — run: sim mcp"
     fi
   else
     d_warn "node not found — the MCP server needs it: brew install node"
+  fi
+  # Deps alone said nothing about whether any client knows the server exists,
+  # which is how an install could look healthy while the MCP never launched.
+  if [ -n "$repo" ]; then
+    want="$repo/mcp/server.js"
+    reg="$(mcp_registered_path)"
+    if [ "$reg" = "$want" ]; then
+      d_ok "MCP registered with Claude Code"
+    elif [ -n "$reg" ]; then
+      d_warn "MCP registered at $reg, not this checkout — run: sim mcp"
+    elif ( PATH="$PATH:$MCP_EXTRA_PATH"; command -v claude >/dev/null 2>&1 ); then
+      d_warn "MCP not registered with Claude Code — run: sim mcp"
+    else
+      d_warn "claude CLI not found — register the MCP manually (see README)"
+    fi
   fi
 
   echo
@@ -1181,11 +1198,109 @@ do_version() {
     || echo "unknown (not a git checkout)"
 }
 
+# ----------------------------------------------------------------------- mcp --
+# The MCP server needs two things the CLI and the app don't: its node
+# dependencies, and an entry in the MCP client's own config. Neither happens
+# by installing the app, which is why the server used to stay invisible until
+# someone ran the README's two commands by hand. install.sh, `sim update` and
+# `sim doctor` all go through here so there is one answer to "is the MCP
+# actually wired up?".
+MCP_NAME="simulators"
+# The app hands us the minimal GUI PATH; Claude Code's `claude` installs to
+# ~/.local/bin and Homebrew's node/npm to /opt/homebrew/bin. Callers scope
+# this with `local PATH=` so it never leaks into the rest of a command.
+MCP_EXTRA_PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"
+
+mcp_registered_path() { # -> echoes the server.js path Claude Code has registered
+  local PATH="$PATH:$MCP_EXTRA_PATH" p=""
+  # Reading the config is ~40x faster than `claude mcp get`, which spawns the
+  # server for a health check — so we only pay for the authoritative check
+  # when the cheap one comes up empty (different scope, or a config rename).
+  if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
+    p="$(jq -r --arg n "$MCP_NAME" '.mcpServers[$n].args[0] // empty' \
+      "$HOME/.claude.json" 2>/dev/null)"
+  fi
+  if [ -z "$p" ] && command -v claude >/dev/null 2>&1; then
+    p="$(claude mcp get "$MCP_NAME" 2>/dev/null \
+      | sed -n 's/^[[:space:]]*Args:[[:space:]]*//p' | head -1)"
+  fi
+  printf '%s' "$p"
+}
+
+mcp_manual_hint() { # server.js
+  echo "  Register it yourself with:"
+  echo "    claude mcp add --scope user $MCP_NAME -- node \"$1\""
+  echo "  Other MCP clients: a stdio server, command 'node', args [\"$1\"]."
+}
+
+# mode 'setup' (install time) registers the server when it's absent; mode
+# 'repair' (update time) fixes broken deps and a stale path but won't re-add
+# a registration the user deliberately removed.
+mcp_sync() { # repo [setup|repair] [force-deps] -> 0 ok, 1 needs the user
+  local repo="$1" mode="${2:-setup}" force="${3:-0}" rc=0 reg
+  local PATH="$PATH:$MCP_EXTRA_PATH"
+  local server="$repo/mcp/server.js"
+  [ -f "$server" ] || { echo "! no MCP server at $server"; return 1; }
+
+  if ! command -v node >/dev/null 2>&1; then
+    echo "! node not found — the MCP server needs it: brew install node"
+    return 1
+  fi
+  if [ "$force" = "1" ] || [ ! -d "$repo/mcp/node_modules" ]; then
+    if command -v npm >/dev/null 2>&1; then
+      echo "Installing MCP server dependencies..."
+      # `npm ci` because `npm install` rewrites package-lock.json — a tracked
+      # file, so a dirty clone would make the next `sim update` fail its
+      # `git pull --ff-only`. Fall back if the lock is out of sync with
+      # package.json, which is the one thing ci refuses to do.
+      ( cd "$repo/mcp" \
+        && { [ -f package-lock.json ] && npm ci --silent 2>/dev/null \
+             || npm install --silent; } ) \
+        || { echo "! installing MCP dependencies failed in $repo/mcp"; rc=1; }
+    else
+      echo "! npm not found — can't install the MCP server's dependencies"
+      rc=1
+    fi
+  fi
+
+  if ! command -v claude >/dev/null 2>&1; then
+    if [ "$mode" = "setup" ]; then
+      echo "! claude CLI not found — skipping MCP registration"
+      mcp_manual_hint "$server"
+    fi
+    return "$rc"
+  fi
+  reg="$(mcp_registered_path)"
+  if [ "$reg" = "$server" ]; then
+    echo "✓ MCP server registered with Claude Code"
+    return "$rc"
+  fi
+  if [ -n "$reg" ]; then
+    # A moved checkout or a second clone. `claude mcp add` is a no-op on an
+    # existing name (and still exits 0), so the stale entry has to go first.
+    echo "MCP server was registered at $reg — re-pointing it here..."
+    claude mcp remove "$MCP_NAME" >/dev/null 2>&1 || true
+  elif [ "$mode" = "repair" ]; then
+    return "$rc"   # unregistered mid-update: assume that was on purpose
+  fi
+  claude mcp add --scope user "$MCP_NAME" -- node "$server" >/dev/null 2>&1 || true
+  if [ "$(mcp_registered_path)" = "$server" ]; then
+    echo "✓ MCP server registered with Claude Code — restart it to pick this up"
+  else
+    echo "! couldn't register the MCP server automatically"
+    mcp_manual_hint "$server"
+    rc=1
+  fi
+  return "$rc"
+}
+
+cmd_mcp() { mcp_sync "$(repo_dir)" setup "${1:-0}"; }
+
 do_update() {
   local repo old new was_running=0
   # When triggered from the app, we inherit the minimal GUI PATH — make
   # sure Homebrew tools (npm) are reachable.
-  PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+  PATH="$PATH:$MCP_EXTRA_PATH"
   repo="$(repo_dir)"
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || die "$repo is not a git checkout — reinstall from https://github.com/rialdana/simulators"
@@ -1203,10 +1318,11 @@ do_update() {
   echo
   # The CLI and MCP server run straight out of the clone, so they're already
   # updated by the pull. Rebuild the rest only if it changed.
+  local force_deps=0
   if git -C "$repo" diff --name-only "$old" "$new" -- mcp/package.json | grep -q .; then
-    echo "Updating MCP server dependencies..."
-    (cd "$repo/mcp" && npm install --silent)
+    force_deps=1
   fi
+  mcp_sync "$repo" repair "$force_deps" || true
   if git -C "$repo" diff --name-only "$old" "$new" -- app/ | grep -q .; then
     pgrep -xq Simulators && was_running=1
     "$repo/app/build.sh"
@@ -1342,6 +1458,12 @@ main() {
         android) models_android "$([ "${2:-}" = "--json" ] && echo 1 || echo 0)" ;;
         "") models_ios 0; echo; models_android 0 ;;
         *) die "usage: sim models [ios|android] [--json]" ;;
+      esac ;;
+    mcp)
+      case "${1:-}" in
+        "") cmd_mcp ;;
+        --reinstall) cmd_mcp 1 ;;
+        *) die "usage: sim mcp [--reinstall]" ;;
       esac ;;
     update | upgrade)
       do_update ;;
