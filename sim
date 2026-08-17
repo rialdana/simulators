@@ -1210,6 +1210,11 @@ MCP_NAME="simulators"
 # ~/.local/bin and Homebrew's node/npm to /opt/homebrew/bin. Callers scope
 # this with `local PATH=` so it never leaks into the rest of a command.
 MCP_EXTRA_PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"
+# Touched once we've seen a correct registration on this machine. It's how
+# repair mode tells "the user removed the server" (marker present — respect
+# it) from "this install predates auto-setup" (no marker — register it).
+MCP_MARK="${XDG_CONFIG_HOME:-$HOME/.config}/sim/mcp-registered"
+mcp_mark() { mkdir -p "${MCP_MARK%/*}" && touch "$MCP_MARK"; }
 
 mcp_registered_path() { # -> echoes the server.js path Claude Code has registered
   local PATH="$PATH:$MCP_EXTRA_PATH" p=""
@@ -1272,7 +1277,8 @@ mcp_sync() { # repo [setup|repair] [force-deps] -> 0 ok, 1 needs the user
   fi
   reg="$(mcp_registered_path)"
   if [ "$reg" = "$server" ]; then
-    echo "✓ MCP server registered with Claude Code"
+    mcp_mark   # adopt registrations made by hand, too
+    [ "$mode" = "repair" ] || echo "✓ MCP server registered with Claude Code"
     return "$rc"
   fi
   if [ -n "$reg" ]; then
@@ -1280,11 +1286,12 @@ mcp_sync() { # repo [setup|repair] [force-deps] -> 0 ok, 1 needs the user
     # existing name (and still exits 0), so the stale entry has to go first.
     echo "MCP server was registered at $reg — re-pointing it here..."
     claude mcp remove "$MCP_NAME" >/dev/null 2>&1 || true
-  elif [ "$mode" = "repair" ]; then
-    return "$rc"   # unregistered mid-update: assume that was on purpose
+  elif [ "$mode" = "repair" ] && [ -f "$MCP_MARK" ]; then
+    return "$rc"   # was registered once, now gone: removed on purpose
   fi
   claude mcp add --scope user "$MCP_NAME" -- node "$server" >/dev/null 2>&1 || true
   if [ "$(mcp_registered_path)" = "$server" ]; then
+    mcp_mark
     echo "✓ MCP server registered with Claude Code — restart it to pick this up"
   else
     echo "! couldn't register the MCP server automatically"
@@ -1310,15 +1317,29 @@ do_update() {
   new="$(git -C "$repo" rev-parse HEAD)"
   if [ "$old" = "$new" ]; then
     echo "Already up to date ($(do_version))."
+    # No pull, but still true up the MCP — a manual `sim update` is how a
+    # machine whose registration never happened gets rescued.
+    mcp_sync "$repo" repair 0 || true
     return 0
   fi
   echo
   echo "Changes:"
   git -C "$repo" log --oneline "$old..$new" | sed 's/^/  /'
   echo
+  # This copy of do_update was parsed before the pull, so running the rest
+  # inline would use the *old* post-update logic — a fix to the update
+  # process itself would sit out the very update that ships it. Hand off to
+  # the freshly pulled file instead.
+  exec "$repo/sim" post-update "$old"
+}
+
+do_post_update() { # old-rev — back half of `sim update`, run from the pulled script
+  local repo old="$1" new force_deps=0 was_running=0
+  PATH="$PATH:$MCP_EXTRA_PATH"
+  repo="$(repo_dir)"
+  new="$(git -C "$repo" rev-parse HEAD)"
   # The CLI and MCP server run straight out of the clone, so they're already
   # updated by the pull. Rebuild the rest only if it changed.
-  local force_deps=0
   if git -C "$repo" diff --name-only "$old" "$new" -- mcp/package.json | grep -q .; then
     force_deps=1
   fi
@@ -1463,8 +1484,13 @@ main() {
       case "${1:-}" in
         "") cmd_mcp ;;
         --reinstall) cmd_mcp 1 ;;
-        *) die "usage: sim mcp [--reinstall]" ;;
+        --repair) mcp_sync "$(repo_dir)" repair 0 ;;
+        *) die "usage: sim mcp [--reinstall|--repair]" ;;
       esac ;;
+    post-update)
+      # Internal: exec'd by do_update from the freshly pulled script.
+      [ $# -eq 1 ] || die "usage: sim post-update <old-rev>"
+      do_post_update "$1" ;;
     update | upgrade)
       do_update ;;
     version | -v | --version)

@@ -42,9 +42,11 @@ One command, run from anywhere. It pulls the latest version of the clone
 and rebuilds only what changed: the CLI and MCP server run straight out of
 the repo (so the pull alone updates them), the app is recompiled and
 relaunched only when `app/` changed, and MCP dependencies are reinstalled
-when they moved. Updating also repairs an MCP registration left pointing at
-an old checkout — but if you removed the server from Claude Code yourself,
-it stays removed. `sim version` shows what you're on, and
+when they moved. Updating also trues up the MCP: a registration pointing at
+an old checkout is re-pointed, and an install that predates automatic MCP
+setup gets registered on its next update — but if you removed the server
+from Claude Code yourself, it stays removed. `sim version` shows what
+you're on, and
 `git pull && ./install.sh` is the manual equivalent.
 
 The app has the same mechanism built in: **Check for Updates…** in the menu

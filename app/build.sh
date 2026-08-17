@@ -40,3 +40,9 @@ rm -rf "$DEST/Simulators.app"
 cp -R "$APP" "$DEST/Simulators.app"
 
 echo "✓ done — launch with: open '$DEST/Simulators.app'"
+
+# Old versions of `sim update` run their own (pre-pull) update logic but run
+# this script fresh from the pull — the one hook old code gives new code. Use
+# it to true up the MCP registration on machines that predate auto-setup.
+# Idempotent; --repair respects a registration the user removed on purpose.
+../sim mcp --repair >/dev/null 2>&1 || true
