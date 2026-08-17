@@ -57,6 +57,14 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   calendar, notifications, …) map per platform; raw `android.permission.*`
   or simctl service names pass through. Android reset = revoke, and the
   permission must be in the app's manifest.
+- `sim logs <app> [--for <seconds>]` — the app's native device logs
+  (crashes, native modules; RN console.log goes to Metro instead). Piped,
+  it dumps recent logs (last ~2 min iOS / 300 lines Android); `--for N`
+  captures the next N seconds instead — relaunch the app, then read what
+  happened. Android needs the app running.
+- `sim doctor` — environment checks (Xcode, Android SDK, adb, avdmanager,
+  Java, CLI/app/MCP install state) with fix hints; non-zero exit when
+  something required is broken.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -73,8 +81,9 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 `list_device_models`, `create_device`, `rename_device`, `delete_device`
 (destructive), `clear_app_data` (destructive), `list_apps`, `launch_app`,
 `quit_app`, `relaunch_app`, `uninstall_app` (destructive), `install_app`,
-`open_url`, `set_app_permission`, `self_update`. Register in Claude Code
-with:
+`open_url`, `set_app_permission`, `app_logs` (use it to read native
+crash/module logs yourself), `doctor`, `self_update`. Register in Claude
+Code with:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js

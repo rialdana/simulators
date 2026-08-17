@@ -111,7 +111,8 @@ use whichever fits:
   `list_device_models`, `create_device`, `rename_device`,
   `clear_app_data` and `uninstall_app` (destructive), `list_apps`,
   `launch_app`, `quit_app`, `relaunch_app`, `install_app`, `open_url`,
-  `set_app_permission`, and `self_update`. It shells out
+  `set_app_permission`, `app_logs`, `doctor`, and `self_update`. It shells
+  out
   to `sim`, so all layers share one implementation. Works with any MCP
   client (Claude Code, Claude Desktop, Cursor, ...).
 
@@ -156,6 +157,8 @@ sim uninstall <app>    remove an app entirely (asks first)
 sim install <path>     install a .app bundle or .apk
 sim url <link>         open a URL/deep link on all booted devices
 sim perm <action> <permission> <app>   grant/revoke/reset a permission
+sim logs <app>         native app logs: stream, recent dump, or --for <sec>
+sim doctor             check the environment, report what's missing
 sim models [platform]  list creatable models and OS versions (--json)
 sim <name>             shorthand for `sim boot <name>`
 ```
@@ -195,6 +198,15 @@ add `--device <name>`.
 - `sim perm grant camera allball` grants/revokes/resets permissions, with
   friendly names (camera, microphone, location, photos, contacts, calendar,
   notifications…) mapped to each platform's real permission ids.
+- `sim logs allball` shows the app's **native** logs (crashes, native
+  modules — RN `console.log` lives in Metro). On a terminal it streams
+  live; piped it dumps recent history; `--for 10` captures the next ten
+  seconds while you reproduce something.
+
+`sim doctor` checks the whole environment — Xcode, Android SDK, adb,
+avdmanager, Java, and the toolset's own install state — and prints fix
+hints for anything missing. Point a peer at it when their machine
+misbehaves.
 
 Android devices show their **display name** ("Pixel 9 Pro XL") everywhere,
 like Android Studio does. `sim rename` edits that display name — spaces and

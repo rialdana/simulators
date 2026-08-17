@@ -76,7 +76,7 @@ const nameArg = {
   ),
 };
 
-const server = new McpServer({ name: "simulators", version: "1.8.0" });
+const server = new McpServer({ name: "simulators", version: "1.9.0" });
 
 server.registerTool(
   "list_devices",
@@ -427,6 +427,51 @@ server.registerTool(
       args.push("--device", d.id);
     }
     return text(await runSim(args));
+  }
+);
+
+server.registerTool(
+  "app_logs",
+  {
+    title: "Get an app's native device logs",
+    description:
+      "Fetch native logs for one app on a booted device — crashes, native modules, OS-level errors. (React Native console.log goes to Metro, not here.) Default: recent logs (~last 2 minutes on iOS, last 300 lines on Android). Pass seconds to instead capture the NEXT N seconds live — e.g. call relaunch_app, then watch the repro happen. Android requires the app to be running.",
+    inputSchema: {
+      ...appArgs,
+      seconds: z.number().int().min(1).max(120).optional()
+        .describe("Capture the next N seconds of live output instead of dumping recent logs"),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ app, device, seconds }) => {
+    const args = ["logs", app];
+    if (device) {
+      const d = await resolveDevice(device, { preferBooted: true });
+      args.push("--device", d.id);
+    }
+    if (seconds) args.push("--for", String(seconds));
+    const out = await runSim(args, { timeoutMs: (seconds ?? 0) * 1000 + 120_000 });
+    const lines = out.split("\n");
+    if (lines.length <= 500) return text(out);
+    return text(`[truncated to the last 500 of ${lines.length} lines]\n` + lines.slice(-500).join("\n"));
+  }
+);
+
+server.registerTool(
+  "doctor",
+  {
+    title: "Diagnose the simulator toolset",
+    description:
+      "Run environment checks (Xcode/simctl, Android SDK/adb/avdmanager/Java, CLI/app/MCP install state) and report what's missing with fix hints. Use when any simulator tool misbehaves or a machine was freshly set up.",
+    annotations: { readOnlyHint: true },
+  },
+  async () => {
+    try {
+      return text(await runSim(["doctor"]));
+    } catch (error) {
+      // doctor exits non-zero when checks fail — the report is the message.
+      return text(String(error.message ?? error));
+    }
   }
 );
 

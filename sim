@@ -25,6 +25,9 @@
 #   sim install <path>     install a .app bundle or .apk on a booted device
 #   sim url <link>         open a URL/deep link on all booted devices
 #   sim perm <grant|revoke|reset> <permission> <app>   e.g. perm grant camera allball
+#   sim logs <app>         app's native logs: stream live (tty), dump recent
+#                          (piped), or capture the next N secs with --for <n>
+#   sim doctor             check the environment and report what's missing
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -57,9 +60,9 @@ FAV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/sim/favorites"
 is_fav() { [ -f "$FAV_FILE" ] && grep -qxF "$1" "$FAV_FILE"; }
 
 if [ -t 1 ]; then
-  GREEN=$'\033[32m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
+  GREEN=$'\033[32m'; RED=$'\033[31m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
 else
-  GREEN=""; DIM=""; BOLD=""; RESET=""
+  GREEN=""; RED=""; DIM=""; BOLD=""; RESET=""
 fi
 
 die() { echo "sim: $*" >&2; exit 1; }
@@ -406,8 +409,8 @@ toggle_fav() { # index
 }
 
 # ------------------------------------------------------------ create/rm/shot --
-parse_flags() { # sets NAME_FLAG, OUT_FLAG, DEVICE_FLAG, POS=(positional args)
-  NAME_FLAG=""; OUT_FLAG=""; DEVICE_FLAG=""; POS=()
+parse_flags() { # sets NAME_FLAG, OUT_FLAG, DEVICE_FLAG, FOR_FLAG, POS=(positional args)
+  NAME_FLAG=""; OUT_FLAG=""; DEVICE_FLAG=""; FOR_FLAG=""; POS=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --name) shift; NAME_FLAG="${1:-}" ;;
@@ -416,10 +419,24 @@ parse_flags() { # sets NAME_FLAG, OUT_FLAG, DEVICE_FLAG, POS=(positional args)
       --out=*) OUT_FLAG="${1#--out=}" ;;
       --device | -d) shift; DEVICE_FLAG="${1:-}" ;;
       --device=*) DEVICE_FLAG="${1#--device=}" ;;
+      --for) shift; FOR_FLAG="${1:-}" ;;
+      --for=*) FOR_FLAG="${1#--for=}" ;;
       *) POS[${#POS[@]}]="$1" ;;
     esac
     shift
   done
+}
+
+run_for() { # seconds command args... — run a streaming command, stop after N seconds
+  local secs=$1 cmd_pid killer_pid
+  shift
+  "$@" &
+  cmd_pid=$!
+  ( sleep "$secs" && kill "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  killer_pid=$!
+  wait "$cmd_pid" 2>/dev/null
+  kill "$killer_pid" 2>/dev/null
+  return 0
 }
 
 # Pick one entry from a named array by loose match: exact (normalized) wins,
@@ -1018,6 +1035,139 @@ android.permission.* / simctl service name"
   echo "✓ $action $perm for $APP_LABEL — done."
 }
 
+cmd_logs() {
+  parse_flags "$@"
+  [ ${#POS[@]} -ge 1 ] || die "usage: sim logs <app> [--device <device>] [--for <seconds>]
+on a terminal this streams live (Ctrl-C to stop); piped, it dumps recent logs;
+--for <seconds> captures the next N seconds instead"
+  [ -z "$FOR_FLAG" ] || printf '%s' "$FOR_FLAG" | grep -qE '^[0-9]+$' || die "--for expects a number of seconds"
+  if [ -n "$DEVICE_FLAG" ]; then resolve_shot "$DEVICE_FLAG"; else pick_booted; fi
+  resolve_app "$SEL" "${POS[*]}"
+  local i=$SEL
+  if [ "${D_PLATFORM[$i]}" = "ios" ]; then
+    # os_log filters by process name — the bundle's executable name.
+    local exe pred
+    exe="$(xcrun simctl listapps "${D_ID[$i]}" 2>/dev/null | plutil -convert json -o - - 2>/dev/null \
+      | jq -r --arg b "$APP_ID" '.[$b].CFBundleExecutable // empty')"
+    [ -n "$exe" ] || exe="$APP_LABEL"
+    pred="process == \"$exe\""
+    if [ -n "$FOR_FLAG" ]; then
+      echo "Capturing $APP_LABEL logs for ${FOR_FLAG}s..." >&2
+      run_for "$FOR_FLAG" xcrun simctl spawn "${D_ID[$i]}" log stream --level debug --style compact --predicate "$pred"
+    elif [ -t 1 ]; then
+      echo "Streaming $APP_LABEL logs (Ctrl-C to stop)..." >&2
+      exec xcrun simctl spawn "${D_ID[$i]}" log stream --level debug --style compact --predicate "$pred"
+    else
+      xcrun simctl spawn "${D_ID[$i]}" log show --last 2m --style compact --predicate "$pred" | tail -n 400
+    fi
+  else
+    local pid
+    pid="$("$ADB" -s "${D_SERIAL[$i]}" shell pidof -s "$APP_ID" 2>/dev/null | tr -d '[:space:]\r')"
+    [ -n "$pid" ] || die "$APP_LABEL isn't running (logcat filters by pid) — start it first: sim launch $APP_ID"
+    if [ -n "$FOR_FLAG" ]; then
+      echo "Capturing $APP_LABEL logs for ${FOR_FLAG}s..." >&2
+      # -T 1: skip the buffered history, capture only what happens from now.
+      run_for "$FOR_FLAG" "$ADB" -s "${D_SERIAL[$i]}" logcat --pid "$pid" -T 1
+    elif [ -t 1 ]; then
+      echo "Streaming $APP_LABEL logs (Ctrl-C to stop)..." >&2
+      exec "$ADB" -s "${D_SERIAL[$i]}" logcat --pid "$pid"
+    else
+      "$ADB" -s "${D_SERIAL[$i]}" logcat --pid "$pid" -t 300 2>/dev/null
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------- doctor --
+DOCTOR_FAIL=0
+d_ok()   { printf "  %s✓%s %s\n" "$GREEN" "$RESET" "$1"; }
+d_warn() { printf "  %s○%s %s\n" "$DIM" "$RESET" "$1"; }
+d_bad()  { printf "  %s✗%s %s\n" "$RED" "$RESET" "$1"; DOCTOR_FAIL=1; }
+
+cmd_doctor() {
+  local n v repo=""
+  echo "${BOLD}iOS${RESET}"
+  if xcode-select -p >/dev/null 2>&1 && xcrun simctl help >/dev/null 2>&1; then
+    d_ok "Xcode: $(xcode-select -p)"
+    n="$(xcrun simctl list runtimes --json 2>/dev/null \
+      | jq '[.runtimes[] | select(.isAvailable and (.name | startswith("iOS")))] | length' 2>/dev/null)"
+    if [ "${n:-0}" -gt 0 ]; then
+      v="$(xcrun simctl list devices available --json 2>/dev/null | jq '[.devices[][]] | length')"
+      d_ok "$n iOS runtime(s), $v simulator(s)"
+    else
+      d_bad "no iOS runtimes — install one in Xcode ▸ Settings ▸ Components"
+    fi
+  else
+    d_bad "Xcode not found — install it from the App Store (simulators + Swift toolchain)"
+  fi
+  if command -v jq >/dev/null 2>&1; then d_ok "jq"; else d_bad "jq missing — brew install jq"; fi
+
+  echo "${BOLD}Android${RESET} ${DIM}(optional)${RESET}"
+  if [ -d "$ANDROID_SDK" ]; then
+    d_ok "SDK: $ANDROID_SDK"
+    if [ -x "$EMULATOR" ]; then d_ok "emulator binary"; else d_bad "emulator missing — install it via Android Studio or: sdkmanager emulator"; fi
+    if [ -n "$ADB" ] && [ -x "$ADB" ]; then
+      d_ok "adb: $ADB"
+    else
+      d_bad "adb not found — sdkmanager platform-tools, or: brew install android-platform-tools"
+    fi
+    if [ -n "$AVDMANAGER" ]; then
+      case "$AVDMANAGER" in
+        "$ANDROID_SDK"/*) d_ok "avdmanager: $AVDMANAGER" ;;
+        *) d_warn "avdmanager outside the SDK — 'sim create android' bootstraps cmdline-tools into the SDK on first use" ;;
+      esac
+      if java -version >/dev/null 2>&1; then
+        d_ok "java: $(java -version 2>&1 | head -1)"
+      else
+        d_bad "java missing (avdmanager needs it) — brew install --cask temurin"
+      fi
+    else
+      d_warn "avdmanager not found — device creation needs it: brew install --cask android-commandlinetools"
+    fi
+    n="$(installed_images | grep -c .)"
+    v="$("$EMULATOR" -list-avds 2>/dev/null | grep -cE '^[A-Za-z0-9._-]+$')"
+    d_ok "$n system image(s), $v AVD(s)"
+  else
+    d_warn "Android SDK not found at $ANDROID_SDK — set \$ANDROID_HOME or install one (iOS-only mode otherwise)"
+  fi
+
+  echo "${BOLD}Toolset${RESET}"
+  repo="$(repo_dir 2>/dev/null)" || repo=""
+  if [ -n "$repo" ] && [ -d "$repo/.git" ]; then
+    d_ok "sim $(do_version) at $repo"
+  else
+    d_warn "sim isn't running from a git checkout — 'sim update' unavailable"
+  fi
+  local app_plist="/Applications/Simulators.app/Contents/Info.plist"
+  [ -f "$app_plist" ] || app_plist="$HOME/Applications/Simulators.app/Contents/Info.plist"
+  if [ -f "$app_plist" ]; then
+    v="$(defaults read "$app_plist" CFBundleShortVersionString 2>/dev/null || echo '?')"
+    if pgrep -xq Simulators; then
+      d_ok "Simulators.app $v (running)"
+    else
+      d_warn "Simulators.app $v installed but not running"
+    fi
+  else
+    d_warn "Simulators.app not installed — run install.sh"
+  fi
+  if command -v node >/dev/null 2>&1; then
+    if [ -n "$repo" ] && [ -d "$repo/mcp/node_modules" ]; then
+      d_ok "MCP server ready (node $(node --version 2>/dev/null))"
+    else
+      d_warn "MCP server deps not installed — cd '$repo/mcp' && npm install"
+    fi
+  else
+    d_warn "node not found — the MCP server needs it: brew install node"
+  fi
+
+  echo
+  if [ "$DOCTOR_FAIL" -eq 0 ]; then
+    echo "All good."
+  else
+    echo "Problems found — see ✗ above."
+    exit 1
+  fi
+}
+
 repo_dir() {
   # The CLI is a symlink into the git clone, so resolving our own path
   # finds the repo — that's what makes `sim update` possible.
@@ -1172,6 +1322,11 @@ main() {
     perm | permission | privacy)
       load_all
       cmd_perm "$@" ;;
+    logs | log)
+      load_all
+      cmd_logs "$@" ;;
+    doctor)
+      cmd_doctor ;;
     rename)
       load_all
       [ $# -ge 2 ] || die "usage: sim rename <device> <new name>"
