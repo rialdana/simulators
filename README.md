@@ -51,7 +51,10 @@ you're on, and
 
 The app has the same mechanism built in: **Check for Updates…** in the menu
 bar fetches the repo, tells you what version is available, and runs the
-update for you (quitting and relaunching itself if the app changed).
+update for you — showing progress while it works (quitting and relaunching
+itself if the app changed) and confirming with an "App updated" alert when
+it's done. The current version is always visible at the bottom of the menu
+and in the window's status bar.
 
 Releases are tagged (`vX.Y.Z`) with notes on the
 [Releases page](https://github.com/rialdana/simulators/releases). You can

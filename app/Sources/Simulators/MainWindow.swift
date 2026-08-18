@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainWindow: View {
     @EnvironmentObject private var store: DeviceStore
+    @EnvironmentObject private var updates: UpdateModel
     @State private var search = ""
     @State private var filter: PlatformFilter = .all
     @State private var pending: PendingAction?
@@ -143,6 +144,18 @@ struct MainWindow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            if updates.updating {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Updating…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let version = updates.version {
+                Text(version)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Toolset version — sim CLI, app, and MCP server update together")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

@@ -3,6 +3,7 @@ import ServiceManagement
 
 struct MenuContent: View {
     @EnvironmentObject private var store: DeviceStore
+    @EnvironmentObject private var updates: UpdateModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -56,9 +57,15 @@ struct MenuContent: View {
             Button("Open Simulators…") { openMainWindow() }
         }
 
-        Section {
+        // The section header doubles as the version label ("Simulators v1.9.0").
+        Section(updates.version.map { "Simulators \($0)" } ?? "Simulators") {
             LaunchAtLoginToggle()
-            Button("Check for Updates…") { Task { await UpdateFlow.run() } }
+            if updates.updating {
+                // Text renders as a disabled menu item — the in-progress state.
+                Text("Updating…")
+            } else {
+                Button("Check for Updates…") { Task { await updates.checkForUpdates() } }
+            }
             Button("Quit Simulators") { NSApp.terminate(nil) }
         }
     }

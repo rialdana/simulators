@@ -25,6 +25,19 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Simulators "$APP/Contents/MacOS/Simulators"
 cp Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+
+# Stamp the bundle (never the source Info.plist — the clone must stay clean
+# for `git pull --ff-only`) with the real toolset version, so Finder, the
+# app, and `sim doctor` all agree with `sim version`.
+VERSION="$(git -C .. describe --tags --always 2>/dev/null | sed 's/^v//' || true)"
+BUILD="$(git -C .. rev-list --count HEAD 2>/dev/null || true)"
+if [ -n "$VERSION" ]; then
+  plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+fi
+if [ -n "$BUILD" ]; then
+  plutil -replace CFBundleVersion -string "$BUILD" "$APP/Contents/Info.plist"
+fi
+
 codesign --force --sign - "$APP" 2>/dev/null
 
 DEST="/Applications"
