@@ -21,13 +21,14 @@ cd simulators
 ```
 
 That links the `sim` CLI onto your PATH, registers the MCP server with
-Claude Code, builds Simulators.app from source, installs it to
+every supported AI client on the machine (Claude Code, Cursor, Codex),
+builds Simulators.app from source, installs it to
 `/Applications`, and launches it. Look for the iPhone icon in the menu bar.
 Run `./install.sh` again anytime to update everything.
 
-MCP setup needs `node` and the `claude` CLI; if either is missing the
-installer prints what to run later and carries on. `SIM_NO_MCP=1
-./install.sh` skips it entirely.
+MCP setup needs `node`; if it is missing, or no supported client is
+installed yet, the installer prints what to run later and carries on.
+`SIM_NO_MCP=1 ./install.sh` skips it entirely.
 
 Everything compiles locally in a few seconds, so there is no Gatekeeper
 friction and nothing to trust beyond the source you can read.
@@ -45,7 +46,7 @@ relaunched only when `app/` changed, and MCP dependencies are reinstalled
 when they moved. Updating also trues up the MCP: a registration pointing at
 an old checkout is re-pointed, and an install that predates automatic MCP
 setup gets registered on its next update — but if you removed the server
-from Claude Code yourself, it stays removed. `sim version` shows what
+from a client yourself, it stays removed there. `sim version` shows what
 you're on, and
 `git pull && ./install.sh` is the manual equivalent.
 
@@ -114,8 +115,9 @@ use whichever fits:
   os, state, favorite, adb serial). Any agent with shell access can drive
   the CLI directly; ambiguous names fail non-interactively with the
   candidate ids, so scripts never hang on a picker.
-- **`CLAUDE.md`** — teaches Claude Code the commands and when to reach for
-  them the moment it works in this repo.
+- **`CLAUDE.md`** (also linked as **`AGENTS.md`**) — teaches Claude Code,
+  Cursor and Codex the commands and when to reach for them the moment they
+  work in this repo.
 - **`mcp/server.js`** — an MCP (Model Context Protocol) stdio server
   exposing typed tools: `list_devices`, `boot_device`, `cold_boot_device`,
   `shutdown_device`, `erase_device` and `delete_device` (flagged
@@ -134,17 +136,28 @@ layout is broken on Android" works end to end. And `create_device` means
 "create a Pixel 9 with Android 36 and boot it" needs no Android Studio.
 
 `./install.sh` sets this up for you — it installs the server's dependencies
-and registers it with Claude Code. Restart Claude Code afterwards and the
-tools appear (`/mcp` lists them). To (re)do it on its own:
+and registers it with every supported client it finds on the machine:
+
+| Client      | Detected by                               | Registered in                                       |
+| ----------- | ----------------------------------------- | --------------------------------------------------- |
+| Claude Code | the `claude` CLI                          | `claude mcp add --scope user` (`~/.claude.json`)    |
+| Cursor      | `~/.cursor` or `/Applications/Cursor.app` | `~/.cursor/mcp.json`                                |
+| Codex       | `~/.codex` or the `codex` CLI             | `~/.codex/config.toml`, `[mcp_servers.simulators]`  |
+
+Restart the client afterwards and the tools appear (in Claude Code, `/mcp`
+lists them). To (re)do it on its own, or for a client you install later:
 
 ```
-sim mcp
+sim mcp                 # every client found on this machine
+sim mcp cursor codex    # just these, whether or not they are installed yet
 ```
 
 It's idempotent: it installs deps if they're missing, registers the server
-if no client knows it, and re-points a registration that's aimed at a moved
-or older checkout. `sim doctor` reports both halves, so a server that was
-never registered shows up as a warning instead of looking healthy.
+with each client that doesn't know it, and re-points a registration that's
+aimed at a moved or older checkout. Existing entries in those config files
+are left alone. `sim doctor` reports one line per installed client, so a
+server that was never registered shows up as a warning instead of looking
+healthy.
 
 For other MCP clients, configure a stdio server with command `node` and
 args `["<repo>/mcp/server.js"]`.

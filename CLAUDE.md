@@ -64,11 +64,13 @@ simulator/emulator — e.g. React Native development, a wedged emulator, or
   happened. Android needs the app running.
 - `sim doctor` — environment checks (Xcode, Android SDK, adb, avdmanager,
   Java, CLI/app install state, MCP deps *and* whether the MCP is actually
-  registered with Claude Code) with fix hints; non-zero exit when something
-  required is broken.
-- `sim mcp` — install the MCP server's deps and register it with Claude
-  Code. `install.sh` runs this, and `sim update` repairs it; run it by hand
-  if the MCP tools never showed up. Idempotent.
+  registered with each MCP client installed on the machine — Claude Code,
+  Cursor, Codex) with fix hints; non-zero exit when something required is
+  broken.
+- `sim mcp [claude|cursor|codex ...]` — install the MCP server's deps and
+  register it with every supported MCP client found on the machine (or just
+  the ones named). `install.sh` runs this, and `sim update` repairs it; run
+  it by hand if the MCP tools never showed up. Idempotent.
 - `sim update` — update the toolset itself (git pull + rebuild what
   changed). `sim version` shows the installed version.
 
@@ -87,12 +89,17 @@ candidates with their ids — retry with the exact `id` from `sim ls --json`.
 `quit_app`, `relaunch_app`, `uninstall_app` (destructive), `install_app`,
 `open_url`, `set_app_permission`, `app_logs` (use it to read native
 crash/module logs yourself), `doctor`, `self_update`. `install.sh` registers
-it with Claude Code automatically; `sim mcp` does the same on its own, and
-the manual equivalent is:
+it with every supported client it finds (Claude Code via `claude mcp add`,
+Cursor in `~/.cursor/mcp.json`, Codex in `~/.codex/config.toml`); `sim mcp`
+does the same on its own. The manual equivalent for Claude Code is:
 
 ```
 claude mcp add --scope user simulators -- node <repo>/mcp/server.js
 ```
+
+For Cursor and Codex, a stdio server with command `node` and args
+`["<repo>/mcp/server.js"]` in their config file. This file is also linked as
+`AGENTS.md`, so Cursor and Codex read the same instructions.
 
 ## Repo layout
 

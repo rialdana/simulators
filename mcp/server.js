@@ -462,7 +462,7 @@ server.registerTool(
   {
     title: "Diagnose the simulator toolset",
     description:
-      "Run environment checks (Xcode/simctl, Android SDK/adb/avdmanager/Java, CLI/app/MCP install state) and report what's missing with fix hints. Use when any simulator tool misbehaves or a machine was freshly set up.",
+      "Run environment checks (Xcode/simctl, Android SDK/adb/avdmanager/Java, CLI/app install state, MCP registration with Claude Code/Cursor/Codex) and report what's missing with fix hints. Use when any simulator tool misbehaves or a machine was freshly set up.",
     annotations: { readOnlyHint: true },
   },
   async () => {

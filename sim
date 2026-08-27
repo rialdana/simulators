@@ -28,7 +28,8 @@
 #   sim logs <app>         app's native logs: stream live (tty), dump recent
 #                          (piped), or capture the next N secs with --for <n>
 #   sim doctor             check the environment and report what's missing
-#   sim mcp                install + register the MCP server (install does this)
+#   sim mcp [client...]    install + register the MCP server with Claude Code,
+#                          Cursor and Codex — whichever is installed (install does this)
 #   sim models [platform]  list creatable models and OS versions (--json)
 #   sim update             pull the latest version and rebuild what changed
 #   sim version            show the installed version
@@ -1150,7 +1151,7 @@ cmd_doctor() {
   else
     d_warn "Simulators.app not installed — run install.sh"
   fi
-  local want reg
+  local want reg c found=0
   if command -v node >/dev/null 2>&1; then
     if [ -n "$repo" ] && [ -d "$repo/mcp/node_modules" ]; then
       d_ok "MCP dependencies (node $(node --version 2>/dev/null))"
@@ -1162,18 +1163,22 @@ cmd_doctor() {
   fi
   # Deps alone said nothing about whether any client knows the server exists,
   # which is how an install could look healthy while the MCP never launched.
+  # One line per client installed on this machine; the rest aren't mentioned.
   if [ -n "$repo" ]; then
     want="$repo/mcp/server.js"
-    reg="$(mcp_registered_path)"
-    if [ "$reg" = "$want" ]; then
-      d_ok "MCP registered with Claude Code"
-    elif [ -n "$reg" ]; then
-      d_warn "MCP registered at $reg, not this checkout — run: sim mcp"
-    elif ( PATH="$PATH:$MCP_EXTRA_PATH"; command -v claude >/dev/null 2>&1 ); then
-      d_warn "MCP not registered with Claude Code — run: sim mcp"
-    else
-      d_warn "claude CLI not found — register the MCP manually (see README)"
-    fi
+    for c in $(mcp_clients_present); do
+      found=1
+      reg="$(mcp_registered_path "$c")"
+      if [ "$reg" = "$want" ]; then
+        d_ok "MCP registered with $(mcp_label "$c")"
+      elif [ -n "$reg" ]; then
+        d_warn "MCP registered with $(mcp_label "$c") at $reg, not this checkout — run: sim mcp"
+      else
+        d_warn "MCP not registered with $(mcp_label "$c") — run: sim mcp"
+      fi
+    done
+    [ "$found" -eq 1 ] \
+      || d_warn "no MCP client found (Claude Code, Cursor, Codex) — register the MCP manually (see README)"
   fi
 
   echo
@@ -1200,49 +1205,175 @@ do_version() {
 
 # ----------------------------------------------------------------------- mcp --
 # The MCP server needs two things the CLI and the app don't: its node
-# dependencies, and an entry in the MCP client's own config. Neither happens
+# dependencies, and an entry in each MCP client's own config. Neither happens
 # by installing the app, which is why the server used to stay invisible until
 # someone ran the README's two commands by hand. install.sh, `sim update` and
 # `sim doctor` all go through here so there is one answer to "is the MCP
 # actually wired up?".
+#
+# Three clients are known, each with its own config format:
+#   claude  Claude Code — `claude mcp add`, which stores it in ~/.claude.json
+#   cursor  Cursor      — ~/.cursor/mcp.json, JSON edited with jq
+#   codex   Codex       — ~/.codex/config.toml, a [mcp_servers.<name>] table
+# Anything else gets the manual hint.
 MCP_NAME="simulators"
+MCP_CLIENTS="claude cursor codex"
 # The app hands us the minimal GUI PATH; Claude Code's `claude` installs to
 # ~/.local/bin and Homebrew's node/npm to /opt/homebrew/bin. Callers scope
 # this with `local PATH=` so it never leaks into the rest of a command.
 MCP_EXTRA_PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"
-# Touched once we've seen a correct registration on this machine. It's how
-# repair mode tells "the user removed the server" (marker present — respect
-# it) from "this install predates auto-setup" (no marker — register it).
-MCP_MARK="${XDG_CONFIG_HOME:-$HOME/.config}/sim/mcp-registered"
-mcp_mark() { mkdir -p "${MCP_MARK%/*}" && touch "$MCP_MARK"; }
+CURSOR_MCP="$HOME/.cursor/mcp.json"
+CODEX_MCP="${CODEX_HOME:-$HOME/.codex}/config.toml"
+# Touched once we've seen a correct registration with a client on this
+# machine. It's how repair mode tells "the user removed the server" (marker
+# present — respect it) from "this install predates auto-setup" (no marker —
+# register it). One marker per client; the unsuffixed file predates Cursor
+# and Codex support and means Claude Code.
+MCP_MARK_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sim"
+mcp_mark() { mkdir -p "$MCP_MARK_DIR" && touch "$MCP_MARK_DIR/mcp-registered.$1"; }
+mcp_marked() { # client
+  [ -f "$MCP_MARK_DIR/mcp-registered.$1" ] \
+    || { [ "$1" = claude ] && [ -f "$MCP_MARK_DIR/mcp-registered" ]; }
+}
 
-mcp_registered_path() { # -> echoes the server.js path Claude Code has registered
+mcp_label() {
+  case "$1" in
+    claude) echo "Claude Code" ;;
+    cursor) echo "Cursor" ;;
+    codex) echo "Codex" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+mcp_client_present() { # client -> 0 when it's installed on this machine
+  local PATH="$PATH:$MCP_EXTRA_PATH"
+  case "$1" in
+    claude) command -v claude >/dev/null 2>&1 ;;
+    cursor) [ -d "${CURSOR_MCP%/*}" ] || [ -d /Applications/Cursor.app ] \
+              || command -v cursor >/dev/null 2>&1 ;;
+    codex) [ -d "${CODEX_MCP%/*}" ] || command -v codex >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+mcp_clients_present() { # -> echoes the installed clients, one per line
+  local c
+  for c in $MCP_CLIENTS; do mcp_client_present "$c" && echo "$c"; done
+  return 0
+}
+
+# Codex keeps its config in TOML and there is no jq for TOML, but a
+# [mcp_servers.<name>] table is simple enough for awk: it runs from its
+# header to the next `[` header (or EOF). Both helpers build the header
+# regex inside awk because `-v` would mangle the backslashes.
+codex_registered_path() { # -> first args[] entry of our table, if any
+  [ -f "$CODEX_MCP" ] || return 0
+  awk -v n="$MCP_NAME" '
+    BEGIN { h = "^[[:space:]]*\\[mcp_servers\\." n "\\][[:space:]]*(#.*)?$" }
+    $0 ~ h { t = 1; next }
+    t && /^[[:space:]]*\[/ { t = 0 }
+    t && /^[[:space:]]*args[[:space:]]*=/ && match($0, /"[^"]*"/) {
+      print substr($0, RSTART + 1, RLENGTH - 2); exit
+    }
+  ' "$CODEX_MCP"
+}
+codex_with_table() { # server.js: stdin config -> stdout with our table replaced/appended
+  awk -v n="$MCP_NAME" -v s="$1" '
+    BEGIN { h = "^[[:space:]]*\\[mcp_servers\\." n "\\][[:space:]]*(#.*)?$" }
+    $0 ~ h { skip = 1; next }
+    skip && /^[[:space:]]*\[/ { skip = 0 }
+    skip { next }
+    # Hold blank lines back so the file never grows a run of them where the
+    # old table (or a trailing gap) used to be.
+    /^[[:space:]]*$/ { blank++; next }
+    { for (; blank > 0; blank--) print ""; print; printed = 1 }
+    END {
+      if (printed) print ""
+      print "[mcp_servers." n "]"
+      print "command = \"node\""
+      print "args = [\"" s "\"]"
+    }
+  '
+}
+
+mcp_write() { # file -> replaces file with stdin atomically, user-readable only
+  local file="$1" tmp
+  mkdir -p "${file%/*}" || return 1
+  tmp="$(mktemp "$file.XXXXXX")" || return 1
+  if cat > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$file"; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+
+mcp_registered_path() { # client -> echoes the server.js path that client has registered
   local PATH="$PATH:$MCP_EXTRA_PATH" p=""
-  # Reading the config is ~40x faster than `claude mcp get`, which spawns the
-  # server for a health check — so we only pay for the authoritative check
-  # when the cheap one comes up empty (different scope, or a config rename).
-  if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
-    p="$(jq -r --arg n "$MCP_NAME" '.mcpServers[$n].args[0] // empty' \
-      "$HOME/.claude.json" 2>/dev/null)"
-  fi
-  if [ -z "$p" ] && command -v claude >/dev/null 2>&1; then
-    p="$(claude mcp get "$MCP_NAME" 2>/dev/null \
-      | sed -n 's/^[[:space:]]*Args:[[:space:]]*//p' | head -1)"
-  fi
+  case "$1" in
+    claude)
+      # Reading the config is ~40x faster than `claude mcp get`, which spawns
+      # the server for a health check — so we only pay for the authoritative
+      # check when the cheap one comes up empty (different scope, or a
+      # config rename).
+      if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
+        p="$(jq -r --arg n "$MCP_NAME" '.mcpServers[$n].args[0] // empty' \
+          "$HOME/.claude.json" 2>/dev/null)"
+      fi
+      if [ -z "$p" ] && command -v claude >/dev/null 2>&1; then
+        p="$(claude mcp get "$MCP_NAME" 2>/dev/null \
+          | sed -n 's/^[[:space:]]*Args:[[:space:]]*//p' | head -1)"
+      fi ;;
+    cursor)
+      if [ -f "$CURSOR_MCP" ]; then
+        p="$(jq -r --arg n "$MCP_NAME" '.mcpServers[$n].args[0] // empty' \
+          "$CURSOR_MCP" 2>/dev/null)"
+      fi ;;
+    codex)
+      p="$(codex_registered_path)" ;;
+  esac
   printf '%s' "$p"
 }
 
-mcp_manual_hint() { # server.js
-  echo "  Register it yourself with:"
-  echo "    claude mcp add --scope user $MCP_NAME -- node \"$1\""
-  echo "  Other MCP clients: a stdio server, command 'node', args [\"$1\"]."
+mcp_register() { # client server.js -> 0 when the write went through (verify separately)
+  local PATH="$PATH:$MCP_EXTRA_PATH" server="$2"
+  case "$1" in
+    claude)
+      command -v claude >/dev/null 2>&1 || return 1
+      # `claude mcp add` is a no-op on an existing name (and still exits 0),
+      # so a stale entry has to go first.
+      claude mcp remove "$MCP_NAME" >/dev/null 2>&1 || true
+      claude mcp add --scope user "$MCP_NAME" -- node "$server" >/dev/null 2>&1 ;;
+    cursor)
+      # Cursor treats mcp.json as a secret and chmods it 600 itself; mcp_write
+      # matches that. A missing or empty file starts from {}.
+      { [ -s "$CURSOR_MCP" ] && cat "$CURSOR_MCP" || echo '{}'; } \
+        | jq --arg n "$MCP_NAME" --arg s "$server" \
+            '.mcpServers[$n] = {command: "node", args: [$s]}' 2>/dev/null \
+        | mcp_write "$CURSOR_MCP" ;;
+    codex)
+      { [ -f "$CODEX_MCP" ] && cat "$CODEX_MCP"; true; } \
+        | codex_with_table "$server" | mcp_write "$CODEX_MCP" ;;
+    *) return 1 ;;
+  esac
 }
 
-# mode 'setup' (install time) registers the server when it's absent; mode
-# 'repair' (update time) fixes broken deps and a stale path but won't re-add
-# a registration the user deliberately removed.
-mcp_sync() { # repo [setup|repair] [force-deps] -> 0 ok, 1 needs the user
-  local repo="$1" mode="${2:-setup}" force="${3:-0}" rc=0 reg
+mcp_manual_hint() { # client server.js
+  echo "  Register it yourself:"
+  case "$1" in
+    claude) echo "    claude mcp add --scope user $MCP_NAME -- node \"$2\"" ;;
+    cursor) echo "    in $CURSOR_MCP:  {\"mcpServers\": {\"$MCP_NAME\": {\"command\": \"node\", \"args\": [\"$2\"]}}}" ;;
+    codex)  echo "    in $CODEX_MCP:  [mcp_servers.$MCP_NAME]  command = \"node\"  args = [\"$2\"]" ;;
+    *)      echo "    a stdio server, command 'node', args [\"$2\"]" ;;
+  esac
+}
+
+# mode 'setup' (install time) registers the server with every client found
+# on this machine; mode 'repair' (update time) fixes broken deps and a stale
+# path but won't re-add a registration the user deliberately removed. Naming
+# clients registers with exactly those, installed or not — `sim mcp cursor`
+# on a machine that hasn't opened Cursor yet still writes the config it will
+# read.
+mcp_sync() { # repo [setup|repair] [force-deps] [client...] -> 0 ok, 1 needs the user
+  local repo="$1" mode="${2:-setup}" force="${3:-0}" rc=0 c reg label clients
+  shift 3
   local PATH="$PATH:$MCP_EXTRA_PATH"
   local server="$repo/mcp/server.js"
   [ -f "$server" ] || { echo "! no MCP server at $server"; return 1; }
@@ -1268,40 +1399,42 @@ mcp_sync() { # repo [setup|repair] [force-deps] -> 0 ok, 1 needs the user
     fi
   fi
 
-  if ! command -v claude >/dev/null 2>&1; then
-    if [ "$mode" = "setup" ]; then
-      echo "! claude CLI not found — skipping MCP registration"
-      mcp_manual_hint "$server"
+  clients="$*"
+  if [ -z "$clients" ]; then
+    clients="$(mcp_clients_present)"
+    if [ -z "$clients" ]; then
+      if [ "$mode" = "setup" ]; then
+        echo "! no MCP client found (Claude Code, Cursor, Codex) — skipping MCP registration"
+        mcp_manual_hint other "$server"
+      fi
+      return "$rc"
     fi
-    return "$rc"
   fi
-  reg="$(mcp_registered_path)"
-  if [ "$reg" = "$server" ]; then
-    mcp_mark   # adopt registrations made by hand, too
-    [ "$mode" = "repair" ] || echo "✓ MCP server registered with Claude Code"
-    return "$rc"
-  fi
-  if [ -n "$reg" ]; then
-    # A moved checkout or a second clone. `claude mcp add` is a no-op on an
-    # existing name (and still exits 0), so the stale entry has to go first.
-    echo "MCP server was registered at $reg — re-pointing it here..."
-    claude mcp remove "$MCP_NAME" >/dev/null 2>&1 || true
-  elif [ "$mode" = "repair" ] && [ -f "$MCP_MARK" ]; then
-    return "$rc"   # was registered once, now gone: removed on purpose
-  fi
-  claude mcp add --scope user "$MCP_NAME" -- node "$server" >/dev/null 2>&1 || true
-  if [ "$(mcp_registered_path)" = "$server" ]; then
-    mcp_mark
-    echo "✓ MCP server registered with Claude Code — restart it to pick this up"
-  else
-    echo "! couldn't register the MCP server automatically"
-    mcp_manual_hint "$server"
-    rc=1
-  fi
+  for c in $clients; do
+    label="$(mcp_label "$c")"
+    reg="$(mcp_registered_path "$c")"
+    if [ "$reg" = "$server" ]; then
+      mcp_mark "$c"   # adopt registrations made by hand, too
+      [ "$mode" = "repair" ] || echo "✓ MCP server registered with $label"
+      continue
+    fi
+    if [ -n "$reg" ]; then
+      # A moved checkout or a second clone.
+      echo "MCP server was registered with $label at $reg — re-pointing it here..."
+    elif [ "$mode" = "repair" ] && mcp_marked "$c"; then
+      continue   # was registered once, now gone: removed on purpose
+    fi
+    if mcp_register "$c" "$server" && [ "$(mcp_registered_path "$c")" = "$server" ]; then
+      mcp_mark "$c"
+      echo "✓ MCP server registered with $label — restart it to pick this up"
+    else
+      echo "! couldn't register the MCP server with $label automatically"
+      mcp_manual_hint "$c" "$server"
+      rc=1
+    fi
+  done
   return "$rc"
 }
-
-cmd_mcp() { mcp_sync "$(repo_dir)" setup "${1:-0}"; }
 
 do_update() {
   local repo old new was_running=0
@@ -1481,12 +1614,17 @@ main() {
         *) die "usage: sim models [ios|android] [--json]" ;;
       esac ;;
     mcp)
-      case "${1:-}" in
-        "") cmd_mcp ;;
-        --reinstall) cmd_mcp 1 ;;
-        --repair) mcp_sync "$(repo_dir)" repair 0 ;;
-        *) die "usage: sim mcp [--reinstall|--repair]" ;;
-      esac ;;
+      # sim mcp [--reinstall|--repair] [claude|cursor|codex ...]
+      MCP_MODE=setup; MCP_FORCE=0; MCP_TARGETS=()
+      for arg in "$@"; do
+        case "$arg" in
+          --reinstall) MCP_FORCE=1 ;;
+          --repair) MCP_MODE=repair ;;
+          claude | cursor | codex) MCP_TARGETS+=("$arg") ;;
+          *) die "usage: sim mcp [--reinstall|--repair] [claude|cursor|codex ...]" ;;
+        esac
+      done
+      mcp_sync "$(repo_dir)" "$MCP_MODE" "$MCP_FORCE" ${MCP_TARGETS[@]+"${MCP_TARGETS[@]}"} ;;
     post-update)
       # Internal: exec'd by do_update from the freshly pulled script.
       [ $# -eq 1 ] || die "usage: sim post-update <old-rev>"
