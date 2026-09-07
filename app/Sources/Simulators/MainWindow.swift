@@ -35,15 +35,31 @@ struct MainWindow: View {
     var body: some View {
         NavigationStack {
             content
+                // The platform filter lives in a scope bar under the toolbar
+                // rather than in it: a segmented control there is ~220pt, which
+                // pushed the action buttons into an overflow menu at the
+                // default window width.
+                .safeAreaInset(edge: .top, spacing: 0) { filterBar }
                 .navigationTitle("Simulators")
                 .toolbar { toolbarContent }
                 .searchable(text: $search, prompt: "Search devices")
         }
         .safeAreaInset(edge: .bottom) { statusBar }
-        .onAppear { WindowActivation.windowOpened() }
+        .onAppear {
+            WindowActivation.windowOpened()
+            // Opened from the menu bar's "Check for Updates…": run it now that
+            // there's a window for the progress sheet to attach to.
+            updates.runRequestedCheck()
+        }
+        .onChange(of: updates.checkRequested) { _, requested in
+            if requested { updates.runRequestedCheck() }
+        }
         .onDisappear { WindowActivation.windowClosed() }
         .sheet(isPresented: $store.showCreateSheet) {
             CreateDeviceSheet().environmentObject(store)
+        }
+        .sheet(isPresented: activityBinding) {
+            ProgressSheet(activity: activity ?? Activity("Working…"))
         }
         .confirmationDialog(
             pending?.title ?? "",
@@ -85,13 +101,24 @@ struct MainWindow: View {
         } else {
             List {
                 ForEach(sections, id: \.title) { section in
-                    Section(section.title) {
+                    Section {
                         ForEach(section.devices) { device in
                             DeviceRow(
                                 device: device,
                                 onErase: { pending = .erase(device); showConfirm = true },
                                 onDelete: { pending = .delete(device); showConfirm = true }
                             )
+                        }
+                    } header: {
+                        HStack {
+                            Text(section.title)
+                            if section.title == Self.favoritesTitle {
+                                Spacer()
+                                Button("Cold Boot All") { store.coldBootFavorites() }
+                                    .buttonStyle(.link)
+                                    .disabled(store.activity != nil)
+                                    .help("Restart every favorite from a cold boot, all at once")
+                            }
                         }
                     }
                 }
@@ -101,23 +128,23 @@ struct MainWindow: View {
         }
     }
 
+    private var filterBar: some View {
+        Picker("Platform", selection: $filter) {
+            ForEach(PlatformFilter.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Picker("Platform", selection: $filter) {
-                ForEach(PlatformFilter.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-        }
-        ToolbarItem {
-            Button {
-                store.showCreateSheet = true
-            } label: {
-                Label("New Device", systemImage: "plus")
-            }
-            .help("Create a new simulator or emulator")
-        }
+        // The "New Device" toolbar button is hidden for now; CreateDeviceSheet
+        // is still presented by store.showCreateSheet when it returns.
         ToolbarItem {
             Button {
                 store.shutdownAll()
@@ -144,22 +171,31 @@ struct MainWindow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            if updates.updating {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Updating…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if let version = updates.version {
+            if let version = updates.version {
                 Text(version)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help("Toolset version — sim CLI, app, and MCP server update together")
             }
+            Button("Check for Updates…") { Task { await updates.checkForUpdates() } }
+                .controlSize(.small)
+                .disabled(updates.phase != .idle)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(.bar)
+    }
+
+    /// Whatever window-wide work is in flight: an update check or install
+    /// first, otherwise a device-store operation. Drives the progress sheet.
+    private var activity: Activity? {
+        updates.phase.activity ?? store.activity
+    }
+
+    private var activityBinding: Binding<Bool> {
+        // Read-only: the sheet can't be dismissed by the user, only by the
+        // work finishing.
+        Binding(get: { activity != nil }, set: { _ in })
     }
 
     private var errorBinding: Binding<Bool> {
@@ -168,6 +204,8 @@ struct MainWindow: View {
             set: { if !$0 { store.lastError = nil } }
         )
     }
+
+    private static let favoritesTitle = "★ Favorites"
 
     private var sections: [(title: String, devices: [Device])] {
         let query = Device.normalize(search)
@@ -185,7 +223,7 @@ struct MainWindow: View {
         var result: [(title: String, devices: [Device])] = []
         let favorites = visible.filter { store.isFavorite($0) }
         if !favorites.isEmpty {
-            result.append((title: "★ Favorites", devices: favorites))
+            result.append((title: Self.favoritesTitle, devices: favorites))
         }
 
         var order: [String] = []

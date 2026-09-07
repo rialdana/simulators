@@ -9,6 +9,10 @@ final class DeviceStore: ObservableObject {
     @Published var favorites: Set<String> = Favorites.load()
     @Published var lastError: String?
     @Published var showCreateSheet = false
+    /// A window-wide operation in flight (shut down all, cold boot favorites);
+    /// the main window shows it in the progress sheet. Per-device work is
+    /// tracked in `busy` and shown inline on the row instead.
+    @Published var activity: Activity?
 
     private var timer: Timer?
 
@@ -83,11 +87,52 @@ final class DeviceStore: ObservableObject {
 
     func shutdownAll() {
         let snapshot = devices
-        busy.formUnion(snapshot.filter(\.booted).map(\.id))
+        let booted = snapshot.filter(\.booted)
+        guard !booted.isEmpty, activity == nil else { return }
+        busy.formUnion(booted.map(\.id))
+        activity = Activity("Shutting down all devices…")
         Task {
             await Actions.shutdownAll(snapshot)
             await refresh()
             busy.subtract(snapshot.map(\.id))
+            activity = nil
+        }
+    }
+
+    /// Cold boot every favorite at once — a full restart of each, launched in
+    /// parallel so a slow Android kill doesn't hold up the iOS simulators.
+    func coldBootFavorites() {
+        let targets = favoriteDevices.filter { !busy.contains($0.id) }
+        guard !targets.isEmpty, activity == nil else { return }
+        busy.formUnion(targets.map(\.id))
+        activity = Activity(
+            "Cold booting favorites…",
+            detail: targets.map(\.name).joined(separator: ", ")
+        )
+        Task {
+            let failures = await withTaskGroup(of: String?.self) { group in
+                for device in targets {
+                    group.addTask {
+                        do {
+                            try await Actions.coldBoot(device)
+                            return nil
+                        } catch {
+                            return "\(device.name): \(error.localizedDescription)"
+                        }
+                    }
+                }
+                var collected: [String] = []
+                for await failure in group {
+                    if let failure { collected.append(failure) }
+                }
+                return collected
+            }
+            activity = nil
+            await refresh()
+            busy.subtract(targets.map(\.id))
+            if !failures.isEmpty {
+                lastError = failures.joined(separator: "\n")
+            }
         }
     }
 

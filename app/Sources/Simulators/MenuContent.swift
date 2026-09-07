@@ -16,6 +16,9 @@ struct MenuContent: View {
                 ForEach(favorites) { device in
                     DeviceActionsMenu(device: device, showsOS: true, showsStar: false)
                 }
+                Divider()
+                Button("Cold Boot All") { store.coldBootFavorites() }
+                    .disabled(store.activity != nil)
             }
         }
 
@@ -50,21 +53,27 @@ struct MenuContent: View {
         }
 
         Section {
-            Button("New Device…") {
-                store.showCreateSheet = true
-                openMainWindow()
-            }
+            // "New Device…" is hidden for now; the create sheet stays wired up
+            // behind store.showCreateSheet for when it comes back.
             Button("Open Simulators…") { openMainWindow() }
         }
 
         // The section header doubles as the version label ("Simulators v1.9.0").
         Section(updates.version.map { "Simulators \($0)" } ?? "Simulators") {
             LaunchAtLoginToggle()
-            if updates.updating {
+            switch updates.phase {
+            case .checking:
                 // Text renders as a disabled menu item — the in-progress state.
+                Text("Checking for Updates…")
+            case .updating:
                 Text("Updating…")
-            } else {
-                Button("Check for Updates…") { Task { await updates.checkForUpdates() } }
+            case .idle:
+                // Checking runs in the app window, where the progress sheet and
+                // the result alert have somewhere to live.
+                Button("Check for Updates…") {
+                    updates.requestCheck()
+                    openMainWindow()
+                }
             }
             Button("Quit Simulators") { NSApp.terminate(nil) }
         }

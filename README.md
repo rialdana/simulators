@@ -50,12 +50,13 @@ from a client yourself, it stays removed there. `sim version` shows what
 you're on, and
 `git pull && ./install.sh` is the manual equivalent.
 
-The app has the same mechanism built in: **Check for Updates…** in the menu
-bar fetches the repo, tells you what version is available, and runs the
-update for you — showing progress while it works (quitting and relaunching
-itself if the app changed) and confirming with an "App updated" alert when
-it's done. The current version is always visible at the bottom of the menu
-and in the window's status bar.
+The app has the same mechanism built in: **Check for Updates…** (in the
+menu bar, the window's status bar, or the Simulators application menu)
+opens the main window, fetches the repo behind a progress sheet, tells you
+what version is available, and runs the update for you — keeping the sheet
+up while it works (quitting and relaunching itself if the app changed) and
+confirming with an "App updated" alert when it's done. The current version
+is always visible at the bottom of the menu and in the window's status bar.
 
 Releases are tagged (`vX.Y.Z`) with notes on the
 [Releases page](https://github.com/rialdana/simulators/releases). You can
@@ -80,20 +81,24 @@ recommended path.
 
 A native SwiftUI app (source in `app/`). The menu bar icon shows how many
 devices are booted and drops down to per-device actions (boot, cold boot,
-shut down, erase), a Running section for quick access, Shut Down All, and
-"Open Simulators…" which opens the main window. The window lists every
-device grouped by iOS runtime and Android, with search (loose matching, like
-the CLI), an All/iOS/Android filter, and per-row action buttons. State
-refreshes every 5 seconds, so devices booted from Xcode, Android Studio, or
-the CLI show up too. There's a "Start at Login" toggle and a
-"Check for Updates…" item in the menu.
+shut down, erase), a Favorites section with **Cold Boot All**, a Running
+section for quick access, Shut Down All, and "Open Simulators…" which opens
+the main window. The window lists every device grouped by iOS runtime and
+Android, with search (loose matching, like the CLI), an All/iOS/Android
+filter, and per-row action buttons. State refreshes every 5 seconds, so
+devices booted from Xcode, Android Studio, or the CLI show up too. There's
+a "Start at Login" toggle and a "Check for Updates…" item in the menu.
+
+Anything window-wide that takes a while — checking for or installing an
+update, Shut Down All, Cold Boot All — shows a progress sheet with a spinner
+on the window until it finishes; per-device actions show a spinner on their
+row instead.
 
 The full device lifecycle lives here too: booted devices have a
 **Screenshot** action (saves to the Desktop and reveals the file in
-Finder), every device has **Delete Device…** behind a confirmation, and
-**New Device…** (menu bar item or the + toolbar button) opens a sheet with
-platform/model/OS pickers — the same creation flow as `sim create`,
-including automatic system-image downloads.
+Finder), and every device has **Delete Device…** behind a confirmation.
+Device creation (the same flow as `sim create`) is built but hidden from
+the menu bar and toolbar for now; use `sim create` in the meantime.
 
 ## Favorites
 
@@ -101,6 +106,9 @@ Star the devices you actually use. Favorites float to the top everywhere: a
 ★ Favorites section pinned first in the window and the menu bar, and listed
 first in the CLI. Toggle them with the star button on a window row, the
 "Add to Favorites" item in a menu bar submenu, or `sim fav <name>`.
+**Cold Boot All** — at the bottom of the menu bar's Favorites section and in
+the window's Favorites header — restarts every favorite at once (the
+equivalent of `sim cold favs`, run in parallel).
 
 Favorites are stored as one device id per line in
 `~/.config/sim/favorites`, shared by the app and the CLI — star something in

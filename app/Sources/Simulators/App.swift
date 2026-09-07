@@ -28,6 +28,21 @@ struct SimulatorsApp: App {
         .defaultSize(width: 600, height: 680)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
+        .commands {
+            // Where macOS apps keep it: the application menu, under About.
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand()
+            }
+        }
+    }
+}
+
+struct CheckForUpdatesCommand: View {
+    @ObservedObject private var updates = UpdateModel.shared
+
+    var body: some View {
+        Button("Check for Updates…") { Task { await updates.checkForUpdates() } }
+            .disabled(updates.phase != .idle)
     }
 }
 
@@ -36,7 +51,7 @@ struct MenuBarLabel: View {
     @ObservedObject var updates: UpdateModel
 
     private var symbol: String {
-        updates.updating ? "arrow.triangle.2.circlepath" : "iphone.gen3"
+        updates.phase == .updating ? "arrow.triangle.2.circlepath" : "iphone.gen3"
     }
 
     var body: some View {
