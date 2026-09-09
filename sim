@@ -58,6 +58,36 @@ SDKMANAGER=""
 
 # Favorites are shared with Simulators.app: one device id per line.
 FAV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/sim/favorites"
+# Settings shared with Simulators.app: `key=value` lines, `#` comments.
+SIM_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/sim/config"
+
+config_get() { # key — the last value set for key in $SIM_CONFIG, or ""
+  [ -f "$SIM_CONFIG" ] || return 0
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" "$SIM_CONFIG" | tail -1 | tr -d '[:space:]'
+}
+
+# The emulator has no resolver of its own: at launch it snapshots the Mac's
+# DNS servers and forwards to them forever, never re-reading them. So a VPN
+# connect/disconnect or a Wi-Fi change silently kills name resolution inside
+# every running emulator — IP traffic keeps working, hostnames don't, and
+# things like FCM (a persistent socket to mtalk.google.com) go quiet with no
+# error in the app. Pinning public resolvers sidesteps that. Override with
+# android_dns=<servers> in $SIM_CONFIG or $SIM_ANDROID_DNS; android_dns=host
+# restores the emulator's own behavior (needed when a VPN blocks outside DNS
+# or the app relies on VPN-only hostnames).
+ANDROID_DNS_DEFAULT="8.8.8.8,1.1.1.1"
+
+android_dns() { # → comma-separated servers to pin, or "" to leave the emulator alone
+  local v="${SIM_ANDROID_DNS:-$(config_get android_dns)}"
+  v="${v:-$ANDROID_DNS_DEFAULT}"
+  case "$v" in
+    host) return 0 ;;
+    *[!A-Za-z0-9.:,-]*)
+      echo "sim: ignoring android_dns='$v' (expected up to 4 comma-separated servers, or 'host'); using $ANDROID_DNS_DEFAULT" >&2
+      v="$ANDROID_DNS_DEFAULT" ;;
+  esac
+  printf '%s' "$v"
+}
 
 is_fav() { [ -f "$FAV_FILE" ] && grep -qxF "$1" "$FAV_FILE"; }
 
@@ -293,8 +323,11 @@ resolve() { # [query...] -> sets SEL
 
 # ------------------------------------------------------------------ actions --
 launch_avd() { # avd [extra emulator flags...]
-  local avd="$1"; shift
-  nohup "$EMULATOR" -avd "$avd" "$@" >/dev/null 2>&1 &
+  local avd="$1" dns; shift
+  dns="$(android_dns)"
+  # $dns is a bare comma list (android_dns strips whitespace), so the unquoted
+  # expansion is one word; when empty the whole flag disappears.
+  nohup "$EMULATOR" -avd "$avd" ${dns:+-dns-server $dns} "$@" >/dev/null 2>&1 &
   disown 2>/dev/null || true
 }
 
@@ -1107,6 +1140,12 @@ cmd_doctor() {
   if [ -d "$ANDROID_SDK" ]; then
     d_ok "SDK: $ANDROID_SDK"
     if [ -x "$EMULATOR" ]; then d_ok "emulator binary"; else d_bad "emulator missing — install it via Android Studio or: sdkmanager emulator"; fi
+    v="$(android_dns 2>/dev/null)"
+    if [ -n "$v" ]; then
+      d_ok "emulator DNS pinned to $v (survives VPN/Wi-Fi changes; android_dns=host in $SIM_CONFIG to use the Mac's resolvers)"
+    else
+      d_warn "emulator DNS follows the Mac's resolvers, snapshotted at launch — a VPN or Wi-Fi change breaks name resolution in running emulators until a cold boot (remove android_dns from $SIM_CONFIG to pin $ANDROID_DNS_DEFAULT)"
+    fi
     if [ -n "$ADB" ] && [ -x "$ADB" ]; then
       d_ok "adb: $ADB"
     else

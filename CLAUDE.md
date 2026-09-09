@@ -108,3 +108,11 @@ For Cursor and Codex, a stdio server with command `node` and args
 - `mcp/` — MCP server (Node, stdio) that shells out to `sim`
 - Favorites live in `~/.config/sim/favorites` (one device id per line),
   shared by the CLI, the app, and the MCP server.
+- Settings live in `~/.config/sim/config` (`key=value` lines), also shared.
+  The only key today is `android_dns`: emulators launch with
+  `-dns-server 8.8.8.8,1.1.1.1` by default because the emulator snapshots
+  the Mac's resolvers at launch and a VPN/Wi-Fi change otherwise kills name
+  resolution (and FCM) inside running emulators. `android_dns=host` restores
+  the emulator's own behavior. If a user reports hostnames failing or push
+  not arriving in an emulator that was running across a VPN toggle, check
+  `sim doctor` and cold boot the emulator.

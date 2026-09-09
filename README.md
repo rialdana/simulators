@@ -261,6 +261,35 @@ the same split automatically. Matching accepts either form.
   relaunches with `-no-snapshot-load` so it boots from scratch instead of
   restoring the quick-boot snapshot.
 
+## Android emulator DNS
+
+The emulator has no resolver of its own. When it starts it snapshots the
+Mac's DNS servers and forwards to them for the rest of its life — it never
+re-reads them. So connecting or disconnecting a VPN, or switching Wi-Fi,
+silently kills name resolution inside every running emulator: requests to
+an IP keep working, hostnames stop resolving, and anything that relies on
+a hostname — FCM push (a persistent socket to `mtalk.google.com`), analytics,
+your API by name — goes quiet with no error in the app. It looks like a
+backend problem until you cold boot the emulator and everything arrives.
+
+`sim` and the app therefore launch every emulator with
+`-dns-server 8.8.8.8,1.1.1.1`, so name resolution no longer depends on the
+network state at launch. Change it in `~/.config/sim/config`
+(`key=value` lines, shared by the CLI and the app):
+
+```
+# up to 4 comma-separated servers
+android_dns=8.8.8.8,1.1.1.1
+# or keep the emulator's own behavior — needed when your VPN blocks outside
+# DNS, or your app relies on hostnames that only the VPN's resolver knows
+android_dns=host
+```
+
+`SIM_ANDROID_DNS` in the environment overrides the file for one shell.
+`sim doctor` shows the effective setting. Only emulators launched by `sim`,
+the app, or the MCP server get the flag — one started from Android Studio
+doesn't — and a running emulator picks it up on its next cold boot.
+
 ## Requirements
 
 - Xcode command line tools (`xcrun simctl`) for iOS

@@ -9,8 +9,8 @@ enum Actions {
             }
             try await Shell.run("/usr/bin/open", ["-a", "Simulator"])
         case .android:
-            guard !device.booted, let emulator = SDKPaths.emulator else { return }
-            Shell.runDetached("'\(emulator)' -avd '\(device.id)'")
+            guard !device.booted else { return }
+            launchEmulator(device)
         }
     }
 
@@ -21,9 +21,8 @@ enum Actions {
             try await Shell.run("/usr/bin/xcrun", ["simctl", "boot", device.id])
             try await Shell.run("/usr/bin/open", ["-a", "Simulator"])
         case .android:
-            guard let emulator = SDKPaths.emulator else { return }
             await killEmulator(device)
-            Shell.runDetached("'\(emulator)' -avd '\(device.id)' -no-snapshot-load")
+            launchEmulator(device, "-no-snapshot-load")
         }
     }
 
@@ -42,9 +41,8 @@ enum Actions {
             _ = try? await Shell.run("/usr/bin/xcrun", ["simctl", "shutdown", device.id])
             try await Shell.run("/usr/bin/xcrun", ["simctl", "erase", device.id])
         case .android:
-            guard let emulator = SDKPaths.emulator else { return }
             await killEmulator(device)
-            Shell.runDetached("'\(emulator)' -avd '\(device.id)' -wipe-data -no-snapshot-load")
+            launchEmulator(device, "-wipe-data", "-no-snapshot-load")
         }
     }
 
@@ -53,6 +51,21 @@ enum Actions {
         for device in devices where device.platform == .android && device.booted {
             await killEmulator(device)
         }
+    }
+
+    /// Every emulator launch goes through here so the DNS pin (see
+    /// SimConfig.androidDNS) applies to boot, cold boot, and erase alike —
+    /// the same flags the `sim` CLI passes.
+    private static func launchEmulator(_ device: Device, _ flags: String...) {
+        guard let emulator = SDKPaths.emulator else { return }
+        var command = "'\(emulator)' -avd '\(device.id)'"
+        if let dns = SimConfig.androidDNS {
+            command += " -dns-server '\(dns)'"
+        }
+        for flag in flags {
+            command += " \(flag)"
+        }
+        Shell.runDetached(command)
     }
 
     /// Kill a running emulator and wait until adb no longer reports it, so a
