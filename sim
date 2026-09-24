@@ -99,6 +99,12 @@ fi
 
 die() { echo "sim: $*" >&2; exit 1; }
 
+# Bring up the window that shows iOS simulators. Xcode 27 replaced
+# Simulator.app with DeviceHub.app, so try both by bundle id.
+open_sim_window() {
+  open -b com.apple.iphonesimulator 2>/dev/null || open -b com.apple.dt.Devices
+}
+
 usage() {
   awk 'NR > 2 && !/^#/ { exit } NR > 2 { sub(/^# ?/, ""); print }' "$0"
 }
@@ -349,7 +355,7 @@ do_boot() { # index
       echo "Booting ${D_NAME[$i]} (${D_OS[$i]})..."
       xcrun simctl boot "${D_ID[$i]}"
     fi
-    open -a Simulator
+    open_sim_window
   else
     if [ "${D_STATE[$i]}" = "Booted" ]; then
       echo "${D_NAME[$i]} is already running."
@@ -366,7 +372,7 @@ do_cold() { # index
   if [ "${D_PLATFORM[$i]}" = "ios" ]; then
     xcrun simctl shutdown "${D_ID[$i]}" >/dev/null 2>&1
     xcrun simctl boot "${D_ID[$i]}"
-    open -a Simulator
+    open_sim_window
   else
     if [ -n "${D_SERIAL[$i]}" ]; then
       "$ADB" -s "${D_SERIAL[$i]}" emu kill >/dev/null 2>&1
@@ -893,7 +899,7 @@ do_launch() { # device-index (APP_ID/APP_LABEL set by resolve_app)
         *) die "launch failed: $out" ;;
       esac
     }
-    open -a Simulator
+    open_sim_window
   else
     out="$("$ADB" -s "${D_SERIAL[$i]}" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 2>/dev/null | tr -d '\r')"
     printf '%s' "$out" | grep -q "Events injected: 1" \
@@ -1128,6 +1134,14 @@ cmd_doctor() {
     if [ "${n:-0}" -gt 0 ]; then
       v="$(xcrun simctl list devices available --json 2>/dev/null | jq '[.devices[][]] | length')"
       d_ok "$n iOS runtime(s), $v simulator(s)"
+      local dev; dev="$(xcode-select -p)"
+      if [ -d "$dev/Applications/Simulator.app" ]; then
+        d_ok "Simulator.app"
+      elif [ -d "$dev/../Applications/DeviceHub.app" ]; then
+        d_ok "DeviceHub.app (Xcode 27+ replacement for Simulator.app)"
+      else
+        d_bad "neither Simulator.app nor DeviceHub.app found — reinstall Xcode"
+      fi
     else
       d_bad "no iOS runtimes — install one in Xcode ▸ Settings ▸ Components"
     fi
