@@ -7,7 +7,7 @@ enum Actions {
             if !device.booted {
                 try await Shell.run("/usr/bin/xcrun", ["simctl", "boot", device.id])
             }
-            try await openSimulatorWindow()
+            try await openSimulatorWindow(device)
         case .android:
             guard !device.booted else { return }
             launchEmulator(device)
@@ -19,7 +19,7 @@ enum Actions {
         case .ios:
             _ = try? await Shell.run("/usr/bin/xcrun", ["simctl", "shutdown", device.id])
             try await Shell.run("/usr/bin/xcrun", ["simctl", "boot", device.id])
-            try await openSimulatorWindow()
+            try await openSimulatorWindow(device)
         case .android:
             await killEmulator(device)
             launchEmulator(device, "-no-snapshot-load")
@@ -56,10 +56,11 @@ enum Actions {
     /// Every emulator launch goes through here so the DNS pin (see
     /// SimConfig.androidDNS) applies to boot, cold boot, and erase alike —
     /// the same flags the `sim` CLI passes.
-    /// Xcode 27 replaced Simulator.app with DeviceHub.app; open whichever exists.
-    private static func openSimulatorWindow() async throws {
+    /// Xcode 27 replaced Simulator.app with DeviceHub.app, whose devices:// URL
+    /// opens just this device in its own window (no device list).
+    private static func openSimulatorWindow(_ device: Device) async throws {
         if (try? await Shell.run("/usr/bin/open", ["-b", "com.apple.iphonesimulator"])) == nil {
-            try await Shell.run("/usr/bin/open", ["-b", "com.apple.dt.Devices"])
+            try await Shell.run("/usr/bin/open", ["devices://device/open?id=\(device.id)&new_window=true"])
         }
     }
 
