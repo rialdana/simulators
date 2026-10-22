@@ -3,3 +3,9 @@ app/build/
 app/Resources/
 mcp/node_modules/
 .DS_Store
+
+# Build artifacts
+*.ipa
+*.xcarchive
+*.dSYM
+*.dSYM.zip
